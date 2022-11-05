@@ -21,7 +21,7 @@ from timm.utils import NativeScaler
 from contextlib import suppress
 
 from utils.distributed import sync_model
-from engine import train_one_epoch, evaluate
+from engine import train_one_epoch, evaluate, tune_clusters
 
 
 
@@ -50,7 +50,10 @@ from engine import train_one_epoch, evaluate
 @click.option("--alpha", default=None, type=float)
 @click.option("--psi_norm_type", default=None, type=str)
 @click.option("--psi_act_type", default=None, type=str)
-
+@click.option("--psi_num_layers", default=None, type=int)
+@click.option("--t_for_neuralef", default=None, type=float)
+@click.option("--is_baseline/--no-is_baseline", default=False, is_flag=True)
+@click.option("--kmeans_l2_normalize/--no-kmeans_l2_normalize", default=False, is_flag=True)
 
 def main(
     log_dir,
@@ -76,7 +79,11 @@ def main(
     input_l2_normalize,
     alpha,
     psi_norm_type,
-    psi_act_type
+    psi_act_type,
+    psi_num_layers,
+    t_for_neuralef,
+    is_baseline,
+    kmeans_l2_normalize
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -90,13 +97,18 @@ def main(
         psi_cfg['norm_type'] = psi_norm_type
     if psi_act_type is not None:
         psi_cfg['act_type'] = psi_act_type
+    if psi_num_layers is not None:
+        psi_cfg['num_layers'] = psi_num_layers
     kmeans_cfg = cfg["kmeans"]
+    kmeans_cfg['l2_normalize'] = kmeans_l2_normalize
     neuralef_loss_cfg = cfg['neuralef']
     if kernel is not None:
         neuralef_loss_cfg['kernel'] = kernel
     if alpha is not None:
         neuralef_loss_cfg['alpha'] = alpha
     neuralef_loss_cfg['input_l2_normalize'] = input_l2_normalize
+    if t_for_neuralef is not None:
+        neuralef_loss_cfg['t'] = t_for_neuralef
     dataset_cfg = cfg["dataset"][dataset]
 
     # model config
@@ -195,6 +207,7 @@ def main(
     # model
     net_kwargs = variant["net_kwargs"]
     net_kwargs["n_cls"] = n_cls
+    net_kwargs['is_baseline'] = is_baseline
     model = create_segmenter(net_kwargs)
     model.to(ptu.device)
 
@@ -213,6 +226,7 @@ def main(
         opt_vars[k] = v
     optimizer = create_optimizer(opt_args, model)
     lr_scheduler = create_scheduler(opt_args, optimizer)
+    # print(', '.join("%s: %s" % item for item in vars(lr_scheduler).items()))
     amp_autocast = suppress
     loss_scaler = None
     if amp:
@@ -262,17 +276,21 @@ def main(
     print(model_without_ddp.psi)
 
     for epoch in range(start_epoch, num_epochs):
+        # # refine the clustering
+        # if epoch == num_epochs - 2:
+        #     tune_clusters(model, train_loader)
+
         # train for one epoch
-        train_logger = train_one_epoch(
-            num_epochs,
-            model,
-            train_loader,
-            optimizer,
-            lr_scheduler,
-            epoch,
-            amp_autocast,
-            loss_scaler,
-        )
+        if not is_baseline:
+            train_logger = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                lr_scheduler,
+                epoch,
+                amp_autocast,
+                loss_scaler,
+            )
 
         # save checkpoint
         if ptu.dist_rank == 0:
@@ -291,12 +309,15 @@ def main(
         eval_epoch = epoch % eval_freq == 0 or epoch == num_epochs - 1
         if eval_epoch:
             eval_logger = evaluate(
+                epoch,
                 model,
                 val_loader,
                 val_seg_gt,
                 window_size,
                 window_stride,
                 amp_autocast,
+                log_dir,
+                is_baseline
             )
             print(f"Stats [{epoch}]:", eval_logger, flush=True)
             print("")
@@ -307,10 +328,10 @@ def main(
                 k: meter.global_avg for k, meter in train_logger.meters.items()
             }
             val_stats = {}
-            if eval_epoch:
-                val_stats = {
-                    k: meter.global_avg for k, meter in eval_logger.meters.items()
-                }
+            # if eval_epoch:
+            #     val_stats = {
+            #         k: meter.global_avg for k, meter in eval_logger.meters.items()
+            #     }
 
             log_stats = {
                 **{f"train_{k}": v for k, v in train_stats.items()},
@@ -321,6 +342,23 @@ def main(
 
             with open(log_dir / "log.txt", "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+
+    # evaluate
+    if resume:
+        tune_clusters(model, train_loader, kmeans_cfg['l2_normalize'], simulate_one_epoch=True)
+        eval_logger = evaluate(
+            num_epochs,
+            model,
+            val_loader,
+            val_seg_gt,
+            window_size,
+            window_stride,
+            amp_autocast,
+            log_dir,
+            is_baseline
+        )
+        print(f"Stats ['final']:", eval_logger, flush=True)
+        print("")
 
     distributed.barrier()
     distributed.destroy_process()

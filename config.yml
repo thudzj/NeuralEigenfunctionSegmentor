@@ -96,19 +96,19 @@ backbone:
     normalization: vit
 psi:
   num_features: 2048
-  k: 32
-  num_layers: 3
-  norm_type: ln
-  act_type: gelu
+  k: 150
+  num_layers: 4
+  norm_type: bn
+  act_type: relu
 kmeans:
   momentum: auto
+  l2_normalize: false
 neuralef:
   kernel: normalized_adjacency
   input_l2_normalize: false
   t: 1
   alpha: 1
-  mask_neg: true
-  num: 20210
+  no_sg: false
 dataset:
   ade20k:
     epochs: 64
