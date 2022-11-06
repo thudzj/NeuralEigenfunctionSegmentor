@@ -99,20 +99,24 @@ psi:
   k: 150
   num_layers: 4
   norm_type: bn
-  act_type: relu
+  act_type: gelu
 kmeans:
   momentum: auto
   l2_normalize: false
 neuralef:
-  kernel: normalized_adjacency
+  upsample_factor: 1
+  kernel: normalized_adjacency_thresholded
+  pixelwise_adj_weight: 0
+  pixelwise_adj_div_factor: 1
   input_l2_normalize: false
+  cache_size: 100
   t: 1
-  alpha: 1
+  alpha: 2
   no_sg: false
 dataset:
   ade20k:
     epochs: 64
-    eval_freq: 2
+    eval_freq: 100
     batch_size: 8
     learning_rate: 0.001
     im_size: 512
@@ -121,7 +125,7 @@ dataset:
     window_stride: 512
   pascal_context:
     epochs: 256
-    eval_freq: 8
+    eval_freq: 100
     batch_size: 16
     learning_rate: 0.001
     im_size: 520
@@ -130,7 +134,7 @@ dataset:
     window_stride: 320
   cityscapes:
     epochs: 216
-    eval_freq: 4
+    eval_freq: 100
     batch_size: 8
     learning_rate: 0.01
     im_size: 1024

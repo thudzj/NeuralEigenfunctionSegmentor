@@ -33,14 +33,14 @@ from engine import train_one_epoch, evaluate, tune_clusters
 @click.option("--crop-size", default=None, type=int)
 @click.option("--window-size", default=None, type=int)
 @click.option("--window-stride", default=None, type=int)
-@click.option("--backbone", default="", type=str)
-@click.option("--optimizer", default="sgd", type=str)
-@click.option("--scheduler", default="polynomial", type=str)
+@click.option("--backbone", default="vit_small_patch16_384", type=str)
+@click.option("--optimizer", default="adamw", type=str)
+@click.option("--scheduler", default="cosine", type=str)
 @click.option("--weight-decay", default=0.0, type=float)
 @click.option("--dropout", default=0.0, type=float)
 @click.option("--batch-size", default=None, type=int)
 @click.option("--epochs", default=None, type=int)
-@click.option("-lr", "--learning-rate", default=None, type=float)
+@click.option("-lr", "--learning-rate", default=0.01, type=float)
 @click.option("--normalization", default=None, type=str)
 @click.option("--eval-freq", default=None, type=int)
 @click.option("--amp/--no-amp", default=False, is_flag=True)
@@ -48,12 +48,17 @@ from engine import train_one_epoch, evaluate, tune_clusters
 @click.option("--kernel", default=None, type=str)
 @click.option("--input_l2_normalize/--no-input_l2_normalize", default=False, is_flag=True)
 @click.option("--alpha", default=None, type=float)
+@click.option("--psi_k", default=None, type=int)
 @click.option("--psi_norm_type", default=None, type=str)
 @click.option("--psi_act_type", default=None, type=str)
 @click.option("--psi_num_layers", default=None, type=int)
 @click.option("--t_for_neuralef", default=None, type=float)
+@click.option("--pixelwise_adj_weight", default=0, type=float)
+@click.option("--pixelwise_adj_div_factor", default=1, type=float)
+@click.option("--upsample_factor", default=1, type=int)
 @click.option("--is_baseline/--no-is_baseline", default=False, is_flag=True)
 @click.option("--kmeans_l2_normalize/--no-kmeans_l2_normalize", default=False, is_flag=True)
+@click.option("--cache_size", default=100, type=int)
 
 def main(
     log_dir,
@@ -78,12 +83,17 @@ def main(
     kernel,
     input_l2_normalize,
     alpha,
+    psi_k,
     psi_norm_type,
     psi_act_type,
     psi_num_layers,
     t_for_neuralef,
+    pixelwise_adj_weight,
+    pixelwise_adj_div_factor,
+    upsample_factor,
     is_baseline,
-    kmeans_l2_normalize
+    kmeans_l2_normalize,
+    cache_size
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -93,6 +103,8 @@ def main(
     cfg = config.load_config()
     backbone_cfg = cfg["backbone"][backbone]
     psi_cfg = cfg["psi"]
+    if psi_k is not None:
+        psi_cfg['k'] = psi_k
     if psi_norm_type is not None:
         psi_cfg['norm_type'] = psi_norm_type
     if psi_act_type is not None:
@@ -109,6 +121,10 @@ def main(
     neuralef_loss_cfg['input_l2_normalize'] = input_l2_normalize
     if t_for_neuralef is not None:
         neuralef_loss_cfg['t'] = t_for_neuralef
+    neuralef_loss_cfg['upsample_factor'] = upsample_factor
+    neuralef_loss_cfg['pixelwise_adj_weight'] = pixelwise_adj_weight
+    neuralef_loss_cfg['pixelwise_adj_div_factor'] = pixelwise_adj_div_factor
+    neuralef_loss_cfg['cache_size'] = cache_size
     dataset_cfg = cfg["dataset"][dataset]
 
     # model config
@@ -213,9 +229,6 @@ def main(
 
     # optimizer
     optimizer_kwargs = variant["optimizer_kwargs"]
-    # optimizer_kwargs["iter_max"] = len(train_loader) * optimizer_kwargs["epochs"]
-    # optimizer_kwargs["iter_warmup"] = 0.0
-    # optimizer_kwargs["updates_per_epoch"] = len(train_loader)
     optimizer_kwargs["warmup_lr"] = 1e-5
     optimizer_kwargs["warmup_epochs"] = 0
     optimizer_kwargs["cooldown_epochs"] = 0
@@ -226,7 +239,6 @@ def main(
         opt_vars[k] = v
     optimizer = create_optimizer(opt_args, model)
     lr_scheduler = create_scheduler(opt_args, optimizer)
-    # print(', '.join("%s: %s" % item for item in vars(lr_scheduler).items()))
     amp_autocast = suppress
     loss_scaler = None
     if amp:
@@ -261,7 +273,6 @@ def main(
     # train
     start_epoch = variant["algorithm_kwargs"]["start_epoch"]
     num_epochs = variant["algorithm_kwargs"]["num_epochs"]
-    eval_freq = variant["algorithm_kwargs"]["eval_freq"]
 
     model_without_ddp = model
     if hasattr(model, "module"):
@@ -276,10 +287,6 @@ def main(
     print(model_without_ddp.psi)
 
     for epoch in range(start_epoch, num_epochs):
-        # # refine the clustering
-        # if epoch == num_epochs - 2:
-        #     tune_clusters(model, train_loader)
-
         # train for one epoch
         if not is_baseline:
             train_logger = train_one_epoch(
@@ -304,38 +311,16 @@ def main(
                 snapshot["loss_scaler"] = loss_scaler.state_dict()
             snapshot["epoch"] = epoch
             torch.save(snapshot, checkpoint_path)
-
-        # evaluate
-        eval_epoch = epoch % eval_freq == 0 or epoch == num_epochs - 1
-        if eval_epoch:
-            eval_logger = evaluate(
-                epoch,
-                model,
-                val_loader,
-                val_seg_gt,
-                window_size,
-                window_stride,
-                amp_autocast,
-                log_dir,
-                is_baseline
-            )
-            print(f"Stats [{epoch}]:", eval_logger, flush=True)
-            print("")
+            del snapshot
 
         # log stats
         if ptu.dist_rank == 0:
             train_stats = {
                 k: meter.global_avg for k, meter in train_logger.meters.items()
             }
-            val_stats = {}
-            # if eval_epoch:
-            #     val_stats = {
-            #         k: meter.global_avg for k, meter in eval_logger.meters.items()
-            #     }
 
             log_stats = {
                 **{f"train_{k}": v for k, v in train_stats.items()},
-                **{f"val_{k}": v for k, v in val_stats.items()},
                 "epoch": epoch,
                 "num_updates": (epoch + 1) * len(train_loader),
             }

@@ -20,7 +20,6 @@ class Segmenter(nn.Module):
         kmeans_cfg,
         neuralef_loss_cfg,
         is_baseline=False,
-        feature_mean_momentum=0.99
     ):
         super().__init__()
         self.n_cls = n_cls
@@ -30,14 +29,20 @@ class Segmenter(nn.Module):
         self.kmeans_cfg = kmeans_cfg
         self.neuralef_loss_cfg = neuralef_loss_cfg
         self.is_baseline = is_baseline
-        self.feature_mean_momentum = feature_mean_momentum
+
+        # unused buffers
         self.register_buffer('num_calls', torch.Tensor([0]))
+        self.register_buffer("feature_mean", torch.zeros(self.backbone.d_model))
+
+        # the clustering buffers
         self.register_buffer("num_per_cluster", torch.zeros(n_cls))
         self.register_buffer("cluster_centers", torch.randn(n_cls, self.psi.fn[-1].out_features))
-        self.register_buffer("feature_mean", torch.zeros(self.backbone.d_model))
+        
+        # a onlien head to check the quality of eigenmaps
         self.online_head = nn.Linear(self.psi.fn[-1].out_features, n_cls)
-        # self.cached_Psi = []
+        
         self.cached_FF = []
+        
         freeze_all_layers_(self.backbone)
 
     @torch.jit.ignore
@@ -92,47 +97,42 @@ class Segmenter(nn.Module):
         # remove CLS/DIST tokens for decoding
         num_extra_tokens = 1 + self.backbone.distilled
         x = x[:, num_extra_tokens:]
-        return x, H_ori, W_ori, H, W
+        return x, im, H_ori, W_ori, H, W
 
-    def eigenmaps(self, im):
-        x = self.forward_features(im)[0]
-        Psi = self.psi(x.flatten(0, 1))
-        return Psi
+    def forward(self, im, return_neuralef_loss=False, return_eigenmaps=False):
+        with torch.no_grad():
+            x, im, H_ori, W_ori, H, W = self.forward_features(im)
+            x = rearrange(x, "b (h w) c -> b c h w", h=H // self.patch_size)
+            if self.neuralef_loss_cfg['upsample_factor'] > 1:
+                H_ = self.neuralef_loss_cfg['upsample_factor'] * x.shape[2]
+                W_ = self.neuralef_loss_cfg['upsample_factor'] * x.shape[3]
+                x = F.interpolate(x, size=(H_, W_), mode="bilinear")
+            FF = rearrange(x, "b c h w-> (b h w) c")
 
-    def forward(self, im, return_neuralef_loss=False):
-        x, H_ori, W_ori, H, W = self.forward_features(im)
-
-        # with torch.no_grad():
-        #     if self.neuralef_loss_cfg['input_l2_normalize'] == True:
-        #         x_ = F.normalize(x, dim=-1)
-        #     else:
-        #         x_ = x
-        #     feature_mean_ = x_.mean((0, 1))
-        #     if self.num_calls == 0:
-        #         self.feature_mean.copy_(feature_mean_)
-        #     else:
-        #         self.feature_mean.mul_(self.feature_mean_momentum).add_((1 - self.feature_mean_momentum) * feature_mean_)
-
-        FF = x.flatten(0, 1)
+            if self.neuralef_loss_cfg['pixelwise_adj_weight'] > 0 and self.training:
+                im_ = F.interpolate(im, size=(x.shape[2], x.shape[3]), mode="bilinear")
+            else:
+                im_ = None
+        
         Psi = self.psi(FF)
+        if return_eigenmaps:
+            return Psi
 
         if self.is_baseline:
-            masks_clustering = self.baseline_clustering(FF).view(x.shape[0], x.shape[1], self.n_cls)
+            masks_clustering = self.baseline_clustering(FF).view(x.shape[0], -1, self.n_cls)
         else:
-            masks_clustering = self.clustering(Psi).view(x.shape[0], x.shape[1], self.n_cls)
-        masks_clf = self.online_head(Psi.clone().detach()).view(x.shape[0], x.shape[1], self.n_cls)
-        masks = rearrange(masks_clf if self.training else masks_clustering, "b (h w) c -> b c h w", h=H // self.patch_size)
+            masks_clustering = None if self.training else self.clustering(Psi).view(x.shape[0], -1, self.n_cls)
+        masks_clf = self.online_head(Psi.clone().detach()).view(x.shape[0], -1, self.n_cls)
+        
+        masks = rearrange(masks_clf if self.training else masks_clustering, "b (h w) c -> b c h w", h=H // self.patch_size*self.neuralef_loss_cfg['upsample_factor'])
         masks = torch.cat([F.interpolate(masks[i*16:min((i+1)*16, len(masks))], size=(H, W), mode="bilinear")
             for i in range(int(math.ceil(float(len(masks))/16.)))])
         masks = unpadding(masks, (H_ori, W_ori))
 
-        # if self.training:
-        #     self.num_calls += 1
-
         if return_neuralef_loss:
-            neuralef_loss, neuralef_reg = cal_neuralef_loss(FF, Psi, self.feature_mean, self.neuralef_loss_cfg, self.cached_FF)
+            neuralef_loss, neuralef_reg = cal_neuralef_loss(FF, Psi, im_, self.neuralef_loss_cfg, self.cached_FF)
 
-            if len(self.cached_FF) == 100:
+            if len(self.cached_FF) == self.neuralef_loss_cfg["cache_size"]:
                 del self.cached_FF[0]
             with torch.no_grad():
                 self.cached_FF.append(F.normalize(FF, dim=1) if self.neuralef_loss_cfg['input_l2_normalize'] == True else FF)
@@ -141,94 +141,57 @@ class Segmenter(nn.Module):
         return masks
 
 
-def cal_neuralef_loss(FF, Psi, feature_mean, neuralef_loss_cfg, cached_FF):
+def cal_neuralef_loss(FF, Psi, im, neuralef_loss_cfg, cached_FF):
     Psi *= neuralef_loss_cfg['t'] / Psi.shape[0]
-    
-    if neuralef_loss_cfg['input_l2_normalize'] == True:
-        FF = F.normalize(FF, dim=1)
-
     with torch.no_grad():
+        if neuralef_loss_cfg['input_l2_normalize'] == True:
+            FF = F.normalize(FF, dim=1)
+
         if 'normalized_adjacency' in neuralef_loss_cfg['kernel']:
+            # the affinity
             A = (FF @ FF.T)
-            if not "zero_adj_diag" in neuralef_loss_cfg['kernel']:
-                A.fill_diagonal_(0.)
-            if 'thresholded' in neuralef_loss_cfg['kernel']:
-                A *= (A >= 0)
-            if 'per_batch' in neuralef_loss_cfg['kernel']:
-                D = A.sum(-1)
-                D *= (D >= 0)
-                D = D.rsqrt()
-                D[D == float('inf')] = 0
-                D[D == float('-inf')] = 0
-                D[D == float('nan')] = 0
-            elif 'cache_for_D' in neuralef_loss_cfg['kernel']:
-                if len(cached_FF) == 0:
-                    D = A.sum(-1) / (A.shape[-1] - 1)
-                else:
-                    D = sum([(FF @ cached_FF_.T).clamp(min=0).sum(-1) for cached_FF_ in cached_FF]) + A.sum(-1)
-                    D /= sum([cached_FF_.shape[0] for cached_FF_ in cached_FF]) + A.shape[-1] - 1
-                D = D.rsqrt()
-            else:
-                D = FF @ feature_mean
-                D *= (D >= 0)
-                D = D.rsqrt()
-                D[D == float('inf')] = 0
-                D[D == float('-inf')] = 0
-                D[D == float('nan')] = 0
-            gram_matrix = D.view(-1, 1) * A * D.view(1, -1)
-            if 'signless' in neuralef_loss_cfg['kernel']:
-                gram_matrix.fill_diagonal_(1.)
-        elif 'rbf' in neuralef_loss_cfg['kernel']:
-            FF_sqr = (FF ** 2).sum(-1)
-            # the rbf kernel
-            A = FF_sqr.view(-1, 1) + FF_sqr.view(1, -1) - 2 * FF @ FF.T
-            sigma2 = float(neuralef_loss_cfg['kernel'].split("_")[1].replace("sigm", ""))
-            A = (- A / 2 / sigma2).exp()
-            gram_matrix = A
-        elif 'custom1' in neuralef_loss_cfg['kernel']:
-            A = FF @ FF.T + 1
             A.fill_diagonal_(0.)
-            D = FF @ feature_mean + 1
+            if 'thresholded' in neuralef_loss_cfg['kernel']:
+                A.clamp_(min=0.)
+            
+            # combine with pixelwise affinity
+            if neuralef_loss_cfg['pixelwise_adj_weight'] > 0:
+                with torch.cuda.amp.autocast():
+                    im = im.add_(1.).div_(2.)
+                    bs, h, w = im.shape[0], im.shape[2], im.shape[3]
+                    x_ = torch.tile(torch.linspace(0, 1, w), (h,)).to(im.device).view(1, 1, -1).repeat(bs, 1, 1)
+                    y_ = torch.repeat_interleave(torch.linspace(0, 1, h).to(im.device), w).view(1, 1, -1).repeat(bs, 1, 1)
+                    im = im.flatten(2) / neuralef_loss_cfg['pixelwise_adj_div_factor']
+
+                    A_p = 0
+                    for k, distance_weight in zip([20, 10], [2.0, 0.1]):
+                        im2 = torch.cat([im, 
+                                        x_.mul(distance_weight),
+                                        y_.mul(distance_weight)], 1)
+                        im2_sqr = im2.norm(dim=1)**2
+                        euc_dist = 2 * torch.einsum("bcp,bcq->bpq", im2, im2) - im2_sqr[:, :, None] - im2_sqr[:, None, :]
+                        euc_dist.diagonal(dim1=-2, dim2=-1).fill_(float("-inf"))
+                        ret = torch.topk(euc_dist, k, dim=2)
+                        res = torch.zeros_like(euc_dist)
+                        res.scatter_(2, ret.indices, torch.ones_like(ret.values))
+                        A_p += (res + res.permute(0, 2, 1)) / 4 # we divide by a further 2 because the for loop is of length 2
+
+                for i in range(bs):
+                    A[i*(h*w):(i+1)*(h*w), i*(h*w):(i+1)*(h*w)] += neuralef_loss_cfg['pixelwise_adj_weight'] * A_p[i].float()
+            
+            # estimate D
+            if len(cached_FF) == 0:
+                D = A.sum(-1) / (A.shape[-1] - 1)
+            else:
+                b_ = cached_FF[0].shape[0] // 8
+                assert cached_FF[0].shape[0] % 8 == 0
+                D = sum([(FF @ cached_FF_[i*b_:(i+1)*b_].T).clamp(min=0).sum(-1) for cached_FF_ in cached_FF for i in range(8)]) + A.sum(-1)
+                D /= sum([cached_FF_.shape[0] for cached_FF_ in cached_FF]) + A.shape[-1] - 1
             D = D.rsqrt()
-            gram_matrix = D.view(-1, 1) * A * D.view(1, -1)
-            if 'signless' in neuralef_loss_cfg['kernel']:
-                for term in neuralef_loss_cfg['kernel'].split("_"):
-                    if 'signless' in term:
-                        break
-                gram_matrix.div_(float(term.replace("signless", ""))).fill_diagonal_(1.)
-        elif neuralef_loss_cfg['kernel'] == 'linear':
-            gram_matrix = FF @ FF.T
-        elif neuralef_loss_cfg['kernel'] == 'linear_thresholded':
-            gram_matrix = FF @ FF.T
-            gram_matrix *= (gram_matrix > 0)
-        elif 'nnn' in neuralef_loss_cfg['kernel']:
-            knn = int(neuralef_loss_cfg['kernel'].split("_")[0].replace("nnn", ""))
-            # the rbf kernel
-            A = (FF ** 2).sum(-1).view(-1, 1) + (FF ** 2).sum(-1).view(1, -1) - 2 * FF @ FF.T
-            sigma2 = float(neuralef_loss_cfg['kernel'].split("_")[1].replace("sigm", ""))
-            A = (- A / 2 / sigma2).exp()
-            ret = torch.topk(A, knn, dim=1)
-            res = torch.zeros_like(A)
-            res.scatter_(1, ret.indices, ret.values)
-            gram_matrix = (res + res.T) / 2
-            gram_matrix.diagonal().zero_()
-            D = gram_matrix.sum(-1)
-            D = D.rsqrt()
-            D[D == float('inf')] = 0
-            gram_matrix = D.view(-1, 1) * gram_matrix * D.view(1, -1)
-            print(gram_matrix[:10, :10])
-        elif 'nn' in neuralef_loss_cfg['kernel']: #--kernel 16nn_sigm20 --input_l2_normalize, --kernel 16nn_sigm100 --no-input_l2_normalize
-            knn = int(neuralef_loss_cfg['kernel'].split("_")[0].replace("nn", ""))
-            # the rbf kernel
-            A = (FF ** 2).sum(-1).view(-1, 1) + (FF ** 2).sum(-1).view(1, -1) - 2 * FF @ FF.T
-            sigma2 = float(neuralef_loss_cfg['kernel'].split("_")[1].replace("sigm", ""))
-            A = (- A / 2 / sigma2).exp()
-            ret = torch.topk(A, knn, dim=1)
-            res = torch.zeros_like(A)
-            res.scatter_(1, ret.indices, ret.values)
-            gram_matrix = (res + res.T) / 2
-            gram_matrix.diagonal().zero_()
-            print(gram_matrix[:10, :10])
+
+            # the gram matrix
+            gram_matrix = A.mul_(D.view(1, -1)).mul_(D.view(-1, 1))
+            # gram_matrix = gram_matrix.float()
         else:
             assert False
 

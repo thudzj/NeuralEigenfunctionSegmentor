@@ -32,7 +32,6 @@ def train_one_epoch(
     model.backbone.eval()
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
-    seg_pred_stats = 0
     for batch in logger.log_every(data_loader, print_freq, header):
         im = batch["im"].to(ptu.device)
         seg_gt = batch["segmentation"].long().to(ptu.device)
@@ -41,10 +40,6 @@ def train_one_epoch(
             seg_pred, neuralef_loss, neuralef_reg = model.forward(im, return_neuralef_loss=True)
             loss = criterion(seg_pred, seg_gt)
         
-        with torch.no_grad():
-            seg_pred = seg_pred.permute(0, 2, 3, 1)
-            seg_pred_stats += torch.nn.functional.one_hot(seg_pred.argmax(-1), seg_pred.shape[-1]).sum((0, 1, 2)).data.cpu().numpy()
-
         loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item()
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value), force=True)
@@ -70,7 +65,6 @@ def train_one_epoch(
             neuralef_reg=neuralef_reg.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
         )
-    print(seg_pred_stats)
     return logger
 
 @torch.no_grad()
@@ -85,10 +79,10 @@ def tune_clusters(
     cached_Psi = []
     for i, batch in tqdm.tqdm(enumerate(data_loader), 'init cluster centers'):
         im = batch["im"].to(ptu.device)
-        Psi = model.eigenmaps(im)
+        Psi = model.forward(im, return_eigenmaps=True)
         cached_Psi.append(Psi)
         torch.cuda.synchronize()
-        if i == 599:
+        if i == 149:
             break
     cached_Psi = torch.cat(cached_Psi)
     if l2_normalize:
@@ -108,7 +102,7 @@ def tune_clusters(
         data_loader.set_epoch(1000)
         for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
             im = batch["im"].to(ptu.device)
-            model.clustering(model.eigenmaps(im))
+            model.clustering(model.forward(im, return_eigenmaps=True))
             torch.cuda.synchronize()
 
 @torch.no_grad()
@@ -159,12 +153,12 @@ def evaluate(
             break
 
     val_seg_pred = gather_data(val_seg_pred)
-    # # find the mapping from ground-truth labels to clustering assignments
-    # maps = optimal_map(val_seg_gt, val_seg_pred, data_loader.unwrapped.n_cls, IGNORE_LABEL)
-    # # rotate the clustering assignments
+    # find the mapping from ground-truth labels to clustering assignments
+    maps = optimal_map(val_seg_gt, val_seg_pred, data_loader.unwrapped.n_cls, IGNORE_LABEL)
+    # rotate the clustering assignments
     keys = val_seg_pred.keys()
-    # for k in keys:
-    #     val_seg_pred[k] = maps[val_seg_pred[k]]
+    for k in keys:
+        val_seg_pred[k] = maps[val_seg_pred[k]]
 
     # the following visualization code works only for ade20k
     vis_dir = log_dir / str(epoch)
