@@ -9,7 +9,10 @@ from einops import rearrange
 from utils.torch import freeze_all_layers_
 from sklearn.cluster import SpectralClustering
 from fast_pytorch_kmeans import KMeans
+import numpy as np
 import scipy
+from sklearn.feature_extraction.image import img_to_graph
+from sklearn.neighbors import kneighbors_graph
 
 class Segmenter(nn.Module):
     def __init__(
@@ -156,28 +159,51 @@ def cal_neuralef_loss(FF, Psi, im, neuralef_loss_cfg, cached_FF):
             
             # combine with pixelwise affinity
             if neuralef_loss_cfg['pixelwise_adj_weight'] > 0:
-                with torch.cuda.amp.autocast():
-                    im = im.add_(1.).div_(2.)
-                    bs, h, w = im.shape[0], im.shape[2], im.shape[3]
-                    x_ = torch.tile(torch.linspace(0, 1, w), (h,)).to(im.device).view(1, 1, -1).repeat(bs, 1, 1)
-                    y_ = torch.repeat_interleave(torch.linspace(0, 1, h).to(im.device), w).view(1, 1, -1).repeat(bs, 1, 1)
-                    im = im.flatten(2) / neuralef_loss_cfg['pixelwise_adj_div_factor']
-
-                    A_p = 0
-                    for k, distance_weight in zip([20, 10], [2.0, 0.1]):
-                        im2 = torch.cat([im, 
-                                        x_.mul(distance_weight),
-                                        y_.mul(distance_weight)], 1)
-                        im2_sqr = im2.norm(dim=1)**2
-                        euc_dist = 2 * torch.einsum("bcp,bcq->bpq", im2, im2) - im2_sqr[:, :, None] - im2_sqr[:, None, :]
+                im = im.add_(1.).div_(2.)
+                bs, h, w = im.shape[0], im.shape[2], im.shape[3]
+                x_ = torch.tile(torch.linspace(0, 1, w), (h,)).to(im.device).view(1, -1, 1).repeat(bs, 1, 1)
+                y_ = torch.repeat_interleave(torch.linspace(0, 1, h).to(im.device), w).view(1, -1, 1).repeat(bs, 1, 1)
+                im = im.flatten(2).permute(0, 2, 1) / neuralef_loss_cfg['pixelwise_adj_div_factor']
+                A_p = None
+                for k, distance_weight in zip([20, 10], [2.0, 0.1]):
+                    im2 = torch.cat([im, 
+                                    x_.mul(distance_weight),
+                                    y_.mul(distance_weight)], -1)
+                    with torch.cuda.amp.autocast():
+                        euc_dist = -torch.cdist(im2, im2)
                         euc_dist.diagonal(dim1=-2, dim2=-1).fill_(float("-inf"))
                         ret = torch.topk(euc_dist, k, dim=2)
-                        res = torch.zeros_like(euc_dist)
-                        res.scatter_(2, ret.indices, torch.ones_like(ret.values))
-                        A_p += (res + res.permute(0, 2, 1)) / 4 # we divide by a further 2 because the for loop is of length 2
+                    res = torch.zeros(*euc_dist.shape, device=euc_dist.device, dtype=bool)
+                    res.scatter_(2, ret.indices, torch.ones_like(ret.values).bool())
+                    if A_p is None:
+                        A_p = torch.logical_or(res, res.permute(0, 2, 1))
+                    else:
+                        A_p = torch.logical_or(A_p, torch.logical_or(res, res.permute(0, 2, 1)))
 
                 for i in range(bs):
                     A[i*(h*w):(i+1)*(h*w), i*(h*w):(i+1)*(h*w)] += neuralef_loss_cfg['pixelwise_adj_weight'] * A_p[i].float()
+                
+                # # im_np = im.permute(0, 2, 3, 1).data.cpu().numpy()
+                # x_ = np.tile(np.linspace(0, 1, w), h).reshape((-1, 1))
+                # y_ = np.repeat(np.linspace(0, 1, h), w).reshape((-1, 1))
+                # xy = np.concatenate([x_, y_], 1)
+                # im_np = im.permute(0, 2, 3, 1).flatten(1, 2).data.cpu().numpy() / neuralef_loss_cfg['pixelwise_adj_div_factor']
+                # for i in range(bs):
+                #     A_p_i = 0
+                #     for k, distance_weight in zip([20, 10], [2.0, 0.1]):
+                #         connectivity = kneighbors_graph(
+                #             np.concatenate([im_np[i], xy * distance_weight], 1), n_neighbors=k, include_self=False, n_jobs=-1
+                #         )
+                #         A_p_i = A_p_i + connectivity + connectivity.T #connectivity.multiply(connectivity.T)
+                    
+                #     # A_p_i = img_to_graph(im_np[i])
+                    
+                #     A_p_i = A_p_i.tocoo()
+                #     values = A_p_i.data
+                #     indices = np.vstack((A_p_i.row, A_p_i.col))
+                #     A_p_i = torch.sparse_coo_tensor(torch.LongTensor(indices).to(A.device), torch.FloatTensor(values).to(A.device).fill_(1.), torch.Size(A_p_i.shape)).to_dense()
+                #     # print(A_p_i[:10, :10])
+                #     A[i*(h*w):(i+1)*(h*w), i*(h*w):(i+1)*(h*w)] += neuralef_loss_cfg['pixelwise_adj_weight'] * A_p_i
             
             # estimate D
             if len(cached_FF) == 0:

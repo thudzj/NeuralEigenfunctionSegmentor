@@ -55,8 +55,10 @@ from engine import train_one_epoch, evaluate, tune_clusters
 @click.option("--t_for_neuralef", default=None, type=float)
 @click.option("--pixelwise_adj_weight", default=0, type=float)
 @click.option("--pixelwise_adj_div_factor", default=1, type=float)
+@click.option("--pixelwise_adj_knn", default=10, type=int)
 @click.option("--upsample_factor", default=1, type=int)
 @click.option("--is_baseline/--no-is_baseline", default=False, is_flag=True)
+@click.option("--kmeans_n_cls", default=None, type=int)
 @click.option("--kmeans_l2_normalize/--no-kmeans_l2_normalize", default=False, is_flag=True)
 @click.option("--cache_size", default=100, type=int)
 
@@ -90,8 +92,10 @@ def main(
     t_for_neuralef,
     pixelwise_adj_weight,
     pixelwise_adj_div_factor,
+    pixelwise_adj_knn,
     upsample_factor,
     is_baseline,
+    kmeans_n_cls,
     kmeans_l2_normalize,
     cache_size
 ):
@@ -112,6 +116,8 @@ def main(
     if psi_num_layers is not None:
         psi_cfg['num_layers'] = psi_num_layers
     kmeans_cfg = cfg["kmeans"]
+    if kmeans_n_cls is not None:
+        kmeans_cfg['n_cls'] = kmeans_n_cls
     kmeans_cfg['l2_normalize'] = kmeans_l2_normalize
     neuralef_loss_cfg = cfg['neuralef']
     if kernel is not None:
@@ -124,6 +130,7 @@ def main(
     neuralef_loss_cfg['upsample_factor'] = upsample_factor
     neuralef_loss_cfg['pixelwise_adj_weight'] = pixelwise_adj_weight
     neuralef_loss_cfg['pixelwise_adj_div_factor'] = pixelwise_adj_div_factor
+    neuralef_loss_cfg['pixelwise_adj_knn'] = pixelwise_adj_knn
     neuralef_loss_cfg['cache_size'] = cache_size
     dataset_cfg = cfg["dataset"][dataset]
 

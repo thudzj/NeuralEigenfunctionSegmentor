@@ -104,6 +104,11 @@ def tune_clusters(
             im = batch["im"].to(ptu.device)
             model.clustering(model.forward(im, return_eigenmaps=True))
             torch.cuda.synchronize()
+        data_loader.set_epoch(1001)
+        for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
+            im = batch["im"].to(ptu.device)
+            model.clustering(model.forward(im, return_eigenmaps=True))
+            torch.cuda.synchronize()
 
 @torch.no_grad()
 def evaluate(
