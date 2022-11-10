@@ -95,6 +95,7 @@ backbone:
     n_layers: 24
     normalization: vit
 psi:
+  res: false
   num_features: 2048
   k: 150
   num_layers: 4

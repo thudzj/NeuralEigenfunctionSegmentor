@@ -12,6 +12,9 @@ from data.utils import dataset_cat_description, seg_to_rgb
 from data.ade20k import ADE20K_CATS_PATH
 from PIL import Image
 from fast_pytorch_kmeans import KMeans
+# import denseCRF
+import eval_utils
+import joblib
 
 
 def train_one_epoch(
@@ -82,18 +85,20 @@ def tune_clusters(
         Psi = model.forward(im, return_eigenmaps=True)
         cached_Psi.append(Psi)
         torch.cuda.synchronize()
+        if i == 99 and Psi.shape[-1] > 256:
+            break
         if i == 149:
             break
     cached_Psi = torch.cat(cached_Psi)
     if l2_normalize:
         cached_Psi = torch.nn.functional.normalize(cached_Psi, dim=-1)
-    kmeans = KMeans(n_clusters=model.n_cls, mode='euclidean', verbose=1)
+    kmeans = KMeans(n_clusters=model.kmeans_n_cls, mode='euclidean', verbose=1)
     assignments = kmeans.fit_predict(cached_Psi)
     del cached_Psi
     cached_Psi = None
     cluster_centers = kmeans.centroids
     model.cluster_centers.data.copy_(cluster_centers)
-    onehot_assignments = torch.nn.functional.one_hot(assignments, model.n_cls)
+    onehot_assignments = torch.nn.functional.one_hot(assignments, model.kmeans_n_cls)
     model.num_per_cluster.copy_(onehot_assignments.long().sum(0))
 
     if simulate_one_epoch:
@@ -159,11 +164,19 @@ def evaluate(
 
     val_seg_pred = gather_data(val_seg_pred)
     # find the mapping from ground-truth labels to clustering assignments
-    maps = optimal_map(val_seg_gt, val_seg_pred, data_loader.unwrapped.n_cls, IGNORE_LABEL)
+    maps = optimal_map(val_seg_gt, val_seg_pred, model.kmeans_n_cls, data_loader.unwrapped.n_cls, IGNORE_LABEL)
     # rotate the clustering assignments
     keys = val_seg_pred.keys()
     for k in keys:
         val_seg_pred[k] = maps[val_seg_pred[k]]
+    
+    list_keys = list(keys)
+    # CRF in multi-process
+    results = joblib.Parallel(n_jobs=16, backend='multiprocessing', verbose=9)(
+        [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls) for i in range(len(list_keys))]
+    )
+    for i in range(len(list_keys)):
+        val_seg_pred[list_keys[i]] = results[i]
 
     # the following visualization code works only for ade20k
     vis_dir = log_dir / str(epoch)
@@ -175,9 +188,11 @@ def evaluate(
         pil_seg = Image.fromarray(seg_rgb[0])
 
         pil_im = Image.open(os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/' + k).copy()
-        dst = Image.new('RGB', (pil_im.width + pil_seg.width, pil_im.height))
+        dst = Image.new('RGB', (pil_im.width*3, pil_im.height))
         dst.paste(pil_im, (0, 0))
         dst.paste(pil_seg, (pil_im.width, 0))
+        pil_blend = Image.blend(pil_im, pil_seg, 0.2).convert("RGB")
+        dst.paste(pil_blend, (pil_im.width*2, 0))
         dst.save(vis_dir / "{}.png".format(i))
         if i == 9:
             break
@@ -196,9 +211,36 @@ def evaluate(
 
     return logger
 
+def process(k, val_seg_pred_, n_cls):
+    
+    unary_potentials = np.transpose(
+        np.reshape(
+            np.eye(n_cls)[val_seg_pred_.reshape(-1)], 
+            (val_seg_pred_.shape[0], val_seg_pred_.shape[1], n_cls)
+        ), 
+        (2, 0, 1)
+    )
+    image = np.array(Image.open(os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/' + k).convert('RGB')).astype(np.uint8)
 
-def optimal_map(val_seg_gt, val_seg_pred, n_cls, ignore_indice):
-    assert ignore_indice >= n_cls, "this code only works for ignore_indices >= n_cls; if not, revise the code accordingly"
+    ITER_MAX= 10
+    POS_W= 3
+    POS_XY_STD= 1
+    BI_W= 4
+    BI_XY_STD= 67
+    BI_RGB_STD= 3
+    postprocessor = eval_utils.DenseCRF(
+        iter_max=ITER_MAX,
+        pos_xy_std=POS_XY_STD,
+        pos_w=POS_W,
+        bi_xy_std=BI_XY_STD,
+        bi_rgb_std=BI_RGB_STD,
+        bi_w=BI_W,
+    )
+    prob = postprocessor(image, unary_potentials)
+    return np.argmax(prob, axis=0)
+
+def optimal_map(val_seg_gt, val_seg_pred, kmeans_n_cls, n_cls, ignore_indice):
+   
     # stats of i-th ground-truth laebl to j-th clustering assignment
     v1, v2 = [], []
     for (k2, v2_) in val_seg_pred.items():
@@ -206,20 +248,34 @@ def optimal_map(val_seg_gt, val_seg_pred, n_cls, ignore_indice):
         v2.append(v2_.reshape((-1)))
     v1, v2 = np.concatenate(v1), np.concatenate(v2)
 
-    counts = np.zeros((n_cls, n_cls))
-    num_pixels = len(v1) - (v1 == ignore_indice).sum()
-    for i in tqdm.tqdm(range(n_cls)):
-        if i == ignore_indice:
-            continue
+    # print('Using majority voting for matching')
+    # match = eval_utils.majority_vote(v2, v1, preds_k=kmeans_n_cls, targets_k=n_cls)
+    # return np.array([aa[1] for aa in match])
+
+    counts = np.zeros((kmeans_n_cls, n_cls))
+    if ignore_indice >= n_cls:
+        count_ignore_indice = np.zeros((kmeans_n_cls,))
+    for i in tqdm.tqdm(range(kmeans_n_cls)):
         pred_i = (v2 == i)
         gt_ = v1[pred_i]
         vv, cc = np.unique(gt_, return_counts=True)
-        results = np.where(vv == ignore_indice)[0]
-        if len(results) > 0:
-            vv = np.delete(vv, list(results))
-            cc = np.delete(cc, list(results))
-        counts[i, vv] += cc
-    assert counts.sum() == num_pixels, (counts.sum(), num_pixels)
-    maps = np.argmax(counts, -1)
+        if ignore_indice >= n_cls:
+            results = np.where(vv == ignore_indice)[0]
+            if len(results) > 0:
+                assert len(results) == 1
+                count_ignore_indice[i] = cc[results[0]]
+                vv = np.delete(vv, list(results))
+                cc = np.delete(cc, list(results))
+        counts[i, vv] = cc
+    if ignore_indice >= n_cls:
+        assert counts.sum() + count_ignore_indice.sum() == len(v1), (counts.sum(), count_ignore_indice.sum(), len(v1))
+        maps = np.argmax(counts, -1) #np.concatenate([counts, count_ignore_indice.reshape((-1, 1))], 1)
+        # for i in range(maps.shape[0]):
+        #     if maps[i] == counts.shape[1]:
+        #         maps[i] = ignore_indice
+        #         print("cluster", i, "set to ignore_indice", ignore_indice)
+    else:
+        assert counts.sum() == len(v1), (counts.sum(), len(v1))
+        maps = np.argmax(counts, -1)
     return maps
 

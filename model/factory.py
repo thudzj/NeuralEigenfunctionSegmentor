@@ -9,7 +9,7 @@ import timm
 from timm.models.helpers import load_pretrained, load_custom_pretrained
 from timm.models.vision_transformer import default_cfgs
 
-from model.psi import MLP
+from model.psi import MLP, ResMLP
 from model.segmenter import Segmenter
 import utils.torch as ptu
 
@@ -48,7 +48,9 @@ def create_backbone(backbone_cfg):
 def create_psi(backbone, psi_cfg):
     psi_cfg = psi_cfg.copy()
     psi_cfg["d_backbone"] = backbone.d_model 
-    psi = MLP(**psi_cfg)
+    model_fn = ResMLP if psi_cfg['res'] == True else MLP
+    del psi_cfg['res']
+    psi = model_fn(**psi_cfg)
     return psi
 
 

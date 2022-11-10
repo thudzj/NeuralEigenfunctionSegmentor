@@ -48,6 +48,7 @@ from engine import train_one_epoch, evaluate, tune_clusters
 @click.option("--kernel", default=None, type=str)
 @click.option("--input_l2_normalize/--no-input_l2_normalize", default=False, is_flag=True)
 @click.option("--alpha", default=None, type=float)
+@click.option("--psi_res/--no-psi_res", default=False, is_flag=True)
 @click.option("--psi_k", default=None, type=int)
 @click.option("--psi_norm_type", default=None, type=str)
 @click.option("--psi_act_type", default=None, type=str)
@@ -85,6 +86,7 @@ def main(
     kernel,
     input_l2_normalize,
     alpha,
+    psi_res,
     psi_k,
     psi_norm_type,
     psi_act_type,
@@ -107,6 +109,7 @@ def main(
     cfg = config.load_config()
     backbone_cfg = cfg["backbone"][backbone]
     psi_cfg = cfg["psi"]
+    psi_cfg['res'] = psi_res
     if psi_k is not None:
         psi_cfg['k'] = psi_k
     if psi_norm_type is not None:
@@ -154,7 +157,7 @@ def main(
     lr = dataset_cfg["learning_rate"]
     if batch_size:
         world_batch_size = batch_size
-    if epochs:
+    if epochs is not None:
         num_epochs = epochs
     if learning_rate:
         lr = learning_rate
@@ -244,8 +247,16 @@ def main(
     opt_vars = vars(opt_args)
     for k, v in optimizer_kwargs.items():
         opt_vars[k] = v
-    optimizer = create_optimizer(opt_args, model)
-    lr_scheduler = create_scheduler(opt_args, optimizer)
+    if optimizer_kwargs['opt'] == 'our_lars':
+        from utils.torch import LARS, exclude_bias_and_norm
+        optimizer = LARS(model.parameters(),
+                        lr=optimizer_kwargs['lr'], weight_decay=optimizer_kwargs['weight_decay'],
+                        weight_decay_filter=exclude_bias_and_norm,
+                        lars_adaptation_filter=exclude_bias_and_norm)
+    else:
+        optimizer = create_optimizer(opt_args, model)
+    if num_epochs > 0:
+        lr_scheduler = create_scheduler(opt_args, optimizer)
     amp_autocast = suppress
     loss_scaler = None
     if amp:
@@ -256,7 +267,12 @@ def main(
     if resume and checkpoint_path.exists():
         print(f"Resuming training from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model"])
+        model_ckpt = checkpoint["model"]
+        for k in list(model_ckpt.keys()):
+            if 'cluster' in k:
+                if model_ckpt[k].shape[0] != kmeans_cfg['n_cls']:
+                    del model_ckpt[k]
+        print(model.load_state_dict(model_ckpt, strict=False))
         optimizer.load_state_dict(checkpoint["optimizer"])
         if loss_scaler and "loss_scaler" in checkpoint:
             loss_scaler.load_state_dict(checkpoint["loss_scaler"])
@@ -336,21 +352,20 @@ def main(
                 f.write(json.dumps(log_stats) + "\n")
 
     # evaluate
-    if resume:
-        tune_clusters(model, train_loader, kmeans_cfg['l2_normalize'], simulate_one_epoch=True)
-        eval_logger = evaluate(
-            num_epochs,
-            model,
-            val_loader,
-            val_seg_gt,
-            window_size,
-            window_stride,
-            amp_autocast,
-            log_dir,
-            is_baseline
-        )
-        print(f"Stats ['final']:", eval_logger, flush=True)
-        print("")
+    tune_clusters(model, train_loader, kmeans_cfg['l2_normalize'], simulate_one_epoch=True)
+    eval_logger = evaluate(
+        num_epochs,
+        model,
+        val_loader,
+        val_seg_gt,
+        window_size,
+        window_stride,
+        amp_autocast,
+        log_dir,
+        is_baseline
+    )
+    print(f"Stats ['final']:", eval_logger, flush=True)
+    print("")
 
     distributed.barrier()
     distributed.destroy_process()

@@ -30,6 +30,7 @@ class Segmenter(nn.Module):
         self.backbone = backbone
         self.psi = psi
         self.kmeans_cfg = kmeans_cfg
+        self.kmeans_n_cls = kmeans_cfg['n_cls']
         self.neuralef_loss_cfg = neuralef_loss_cfg
         self.is_baseline = is_baseline
 
@@ -38,11 +39,11 @@ class Segmenter(nn.Module):
         self.register_buffer("feature_mean", torch.zeros(self.backbone.d_model))
 
         # the clustering buffers
-        self.register_buffer("num_per_cluster", torch.zeros(n_cls))
-        self.register_buffer("cluster_centers", torch.randn(n_cls, self.psi.fn[-1].out_features))
+        self.register_buffer("num_per_cluster", torch.zeros(self.kmeans_n_cls))
+        self.register_buffer("cluster_centers", torch.randn(self.kmeans_n_cls, self.psi.out_features))
         
         # a onlien head to check the quality of eigenmaps
-        self.online_head = nn.Linear(self.psi.fn[-1].out_features, n_cls)
+        self.online_head = nn.Linear(self.psi.out_features, n_cls)
         
         self.cached_FF = []
         
@@ -68,11 +69,11 @@ class Segmenter(nn.Module):
         logits = (Psi ** 2).sum(1).view(-1, 1) + (self.cluster_centers ** 2).sum(1).view(1, -1) - 2 * Psi @ self.cluster_centers.T
         logits = -logits
         assignments = logits.argmax(dim=1)
-        onehot_assignments = F.one_hot(assignments, self.n_cls)
+        onehot_assignments = F.one_hot(assignments, self.kmeans_n_cls)
     
         if self.training:
             if isinstance(self.kmeans_cfg['momentum'], float):
-                momentum = self.kmeans_cfg['momentum'] * torch.ones(self.n_cls, device=Psi.device)
+                momentum = self.kmeans_cfg['momentum'] * torch.ones(self.kmeans_n_cls, device=Psi.device)
                 center_ = onehot_assignments.float().T @ Psi / onehot_assignments.long().sum(0).view(-1, 1)
                 self.cluster_centers.mul_(momentum.view(-1, 1)).add_(center_ * (1 - momentum.view(-1, 1)))
                 self.num_per_cluster.add_(onehot_assignments.long().sum(0))
@@ -88,7 +89,7 @@ class Segmenter(nn.Module):
         A = FF @ FF.T
         A *= (A >= 0)
         sc = SpectralClustering(n_clusters=cls_, affinity='precomputed').fit(A.data.cpu().numpy())
-        logits = F.one_hot(torch.from_numpy(sc.labels_).to(A.device).long(), self.n_cls).float()
+        logits = F.one_hot(torch.from_numpy(sc.labels_).to(A.device).long(), self.kmeans_n_cls).float()
         return logits
     
     def forward_features(self, im):
@@ -122,9 +123,9 @@ class Segmenter(nn.Module):
             return Psi
 
         if self.is_baseline:
-            masks_clustering = self.baseline_clustering(FF).view(x.shape[0], -1, self.n_cls)
+            masks_clustering = self.baseline_clustering(FF).view(x.shape[0], -1, self.kmeans_n_cls)
         else:
-            masks_clustering = None if self.training else self.clustering(Psi).view(x.shape[0], -1, self.n_cls)
+            masks_clustering = None if self.training else self.clustering(Psi).view(x.shape[0], -1, self.kmeans_n_cls)
         masks_clf = self.online_head(Psi.clone().detach()).view(x.shape[0], -1, self.n_cls)
         
         masks = rearrange(masks_clf if self.training else masks_clustering, "b (h w) c -> b c h w", h=H // self.patch_size*self.neuralef_loss_cfg['upsample_factor'])
@@ -176,9 +177,9 @@ def cal_neuralef_loss(FF, Psi, im, neuralef_loss_cfg, cached_FF):
                     res = torch.zeros(*euc_dist.shape, device=euc_dist.device, dtype=bool)
                     res.scatter_(2, ret.indices, torch.ones_like(ret.values).bool())
                     if A_p is None:
-                        A_p = torch.logical_or(res, res.permute(0, 2, 1))
+                        A_p = torch.logical_and(res, res.permute(0, 2, 1))
                     else:
-                        A_p = torch.logical_or(A_p, torch.logical_or(res, res.permute(0, 2, 1)))
+                        A_p = torch.logical_or(A_p, torch.logical_and(res, res.permute(0, 2, 1)))
 
                 for i in range(bs):
                     A[i*(h*w):(i+1)*(h*w), i*(h*w):(i+1)*(h*w)] += neuralef_loss_cfg['pixelwise_adj_weight'] * A_p[i].float()
