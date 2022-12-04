@@ -49,17 +49,24 @@ from engine import train_one_epoch, evaluate, tune_clusters
 @click.option("--input_l2_normalize/--no-input_l2_normalize", default=False, is_flag=True)
 @click.option("--alpha", default=None, type=float)
 @click.option("--psi_res/--no-psi_res", default=False, is_flag=True)
+@click.option("--psi_transformer/--no-psi_transformer", default=False, is_flag=True)
 @click.option("--psi_k", default=None, type=int)
+@click.option("--psi_num_features", default=None, type=int)
 @click.option("--psi_norm_type", default=None, type=str)
 @click.option("--psi_act_type", default=None, type=str)
 @click.option("--psi_num_layers", default=None, type=int)
+@click.option("--psi_projector/--no-psi_projector", default=False, is_flag=True)
 @click.option("--t_for_neuralef", default=None, type=float)
 @click.option("--pixelwise_adj_weight", default=0, type=float)
 @click.option("--pixelwise_adj_div_factor", default=1, type=float)
 @click.option("--pixelwise_adj_knn", default=10, type=int)
+@click.option("--instancewise/--no-instancewise", default=False, is_flag=True)
+@click.option("--asymmetric/--no-asymmetric", default=False, is_flag=True)
+@click.option("--no_sg/--no-no_sg", default=False, is_flag=True)
 @click.option("--upsample_factor", default=1, type=int)
 @click.option("--is_baseline/--no-is_baseline", default=False, is_flag=True)
 @click.option("--kmeans_n_cls", default=None, type=int)
+@click.option("--kmeans_use_hidden_outputs/--no-kmeans_use_hidden_outputs", default=False, is_flag=True)
 @click.option("--kmeans_l2_normalize/--no-kmeans_l2_normalize", default=False, is_flag=True)
 @click.option("--cache_size", default=100, type=int)
 
@@ -87,17 +94,24 @@ def main(
     input_l2_normalize,
     alpha,
     psi_res,
+    psi_transformer,
     psi_k,
+    psi_num_features,
     psi_norm_type,
     psi_act_type,
     psi_num_layers,
+    psi_projector,
     t_for_neuralef,
     pixelwise_adj_weight,
     pixelwise_adj_div_factor,
     pixelwise_adj_knn,
+    instancewise,
+    asymmetric,
+    no_sg,
     upsample_factor,
     is_baseline,
     kmeans_n_cls,
+    kmeans_use_hidden_outputs,
     kmeans_l2_normalize,
     cache_size
 ):
@@ -110,17 +124,22 @@ def main(
     backbone_cfg = cfg["backbone"][backbone]
     psi_cfg = cfg["psi"]
     psi_cfg['res'] = psi_res
+    psi_cfg['transformer'] = psi_transformer
     if psi_k is not None:
         psi_cfg['k'] = psi_k
+    if psi_num_features is not None:
+        psi_cfg['num_features'] = psi_num_features
     if psi_norm_type is not None:
         psi_cfg['norm_type'] = psi_norm_type
     if psi_act_type is not None:
         psi_cfg['act_type'] = psi_act_type
+    psi_cfg['projector'] = psi_projector
     if psi_num_layers is not None:
         psi_cfg['num_layers'] = psi_num_layers
     kmeans_cfg = cfg["kmeans"]
     if kmeans_n_cls is not None:
         kmeans_cfg['n_cls'] = kmeans_n_cls
+    kmeans_cfg['use_hidden_outputs'] = kmeans_use_hidden_outputs
     kmeans_cfg['l2_normalize'] = kmeans_l2_normalize
     neuralef_loss_cfg = cfg['neuralef']
     if kernel is not None:
@@ -130,6 +149,10 @@ def main(
     neuralef_loss_cfg['input_l2_normalize'] = input_l2_normalize
     if t_for_neuralef is not None:
         neuralef_loss_cfg['t'] = t_for_neuralef
+    neuralef_loss_cfg['instancewise'] = instancewise
+    neuralef_loss_cfg['asymmetric'] = asymmetric
+    neuralef_loss_cfg['no_sg'] = no_sg
+    
     neuralef_loss_cfg['upsample_factor'] = upsample_factor
     neuralef_loss_cfg['pixelwise_adj_weight'] = pixelwise_adj_weight
     neuralef_loss_cfg['pixelwise_adj_div_factor'] = pixelwise_adj_div_factor
@@ -234,11 +257,17 @@ def main(
     net_kwargs = variant["net_kwargs"]
     net_kwargs["n_cls"] = n_cls
     net_kwargs['is_baseline'] = is_baseline
-    model = create_segmenter(net_kwargs)
+    model = create_segmenter(net_kwargs, neuralef_loss_cfg['upsample_factor'])
     model.to(ptu.device)
 
     # optimizer
     optimizer_kwargs = variant["optimizer_kwargs"]
+    optimizer_kwargs["iter_max"] = len(train_loader) * optimizer_kwargs["epochs"]
+    optimizer_kwargs["iter_warmup"] = 0.0
+    # if psi_cfg['transformer'] and optimizer_kwargs['opt'] == 'adamw':
+    #     optimizer_kwargs["warmup_lr"] = 1e-6
+    #     optimizer_kwargs["warmup_epochs"] = 2
+    # else:
     optimizer_kwargs["warmup_lr"] = 1e-5
     optimizer_kwargs["warmup_epochs"] = 0
     optimizer_kwargs["cooldown_epochs"] = 0
@@ -269,7 +298,7 @@ def main(
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model_ckpt = checkpoint["model"]
         for k in list(model_ckpt.keys()):
-            if 'cluster' in k:
+            if 'cluster' in k or 'online_head' in k:
                 if model_ckpt[k].shape[0] != kmeans_cfg['n_cls']:
                     del model_ckpt[k]
         print(model.load_state_dict(model_ckpt, strict=False))

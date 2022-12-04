@@ -32,6 +32,39 @@ backbone:
     n_layers: 12
     normalization: deit
     distilled: true
+  # deno
+  vit_small_patch16_224_dino:
+    image_size: 224
+    patch_size: 16
+    d_model: 384
+    n_heads: 6
+    n_layers: 12
+    normalization: deit
+    distilled: false
+  vit_small_patch8_224_dino:
+    image_size: 224
+    patch_size: 8
+    d_model: 384
+    n_heads: 6
+    n_layers: 12
+    normalization: deit
+    distilled: false
+  vit_base_patch16_224_dino:
+    image_size: 224
+    patch_size: 16
+    d_model: 768
+    n_heads: 12
+    n_layers: 12
+    normalization: deit
+    distilled: false
+  vit_base_patch8_224_dino:
+    image_size: 224
+    patch_size: 8
+    d_model: 768
+    n_heads: 12
+    n_layers: 12
+    normalization: deit
+    distilled: false
   # vit
   vit_base_patch8_384:
     image_size: 384
@@ -95,16 +128,19 @@ backbone:
     n_layers: 24
     normalization: vit
 psi:
+  transformer: false
   res: false
   num_features: 2048
   k: 150
   num_layers: 4
   norm_type: bn
-  act_type: gelu
+  act_type: relu
+  projector: false
 kmeans:
   n_cls: 150
   momentum: auto
   l2_normalize: false
+  use_hidden_outputs: false
 neuralef:
   upsample_factor: 1
   kernel: normalized_adjacency_thresholded
@@ -116,6 +152,8 @@ neuralef:
   t: 1
   alpha: 2
   no_sg: false
+  asymmetric: false
+  instancewise: false
 dataset:
   ade20k:
     epochs: 64

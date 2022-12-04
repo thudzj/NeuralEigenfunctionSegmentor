@@ -16,6 +16,10 @@ from fast_pytorch_kmeans import KMeans
 import eval_utils
 import joblib
 
+from timm import optim
+
+from optim.scheduler import PolynomialLR
+
 
 def train_one_epoch(
     model,
@@ -35,35 +39,57 @@ def train_one_epoch(
     model.backbone.eval()
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
+    batch_size = None
     for batch in logger.log_every(data_loader, print_freq, header):
         im = batch["im"].to(ptu.device)
         seg_gt = batch["segmentation"].long().to(ptu.device)
+        if batch_size is None:
+            batch_size = im.shape[0]
+        if im.shape[0] < batch_size:
+            break
 
         with amp_autocast():
-            seg_pred, neuralef_loss, neuralef_reg = model.forward(im, return_neuralef_loss=True)
+            seg_pred, neuralef_loss, neuralef_reg = model.forward(im, return_neuralef_loss=True) #, seg_gt=seg_gt, seg_pred2, seg_pred3
             loss = criterion(seg_pred, seg_gt)
+            # loss2 = criterion(seg_pred2, seg_gt)
+            # loss3 = criterion(seg_pred3, seg_gt)
+
+            with torch.no_grad():
+                mask_ = (seg_gt != IGNORE_LABEL).float()
+                mask_sum_ = mask_.sum()
+                acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
+                # acc2 = ((seg_pred2.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
+                # acc3 = ((seg_pred3.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
         
-        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item()
+        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item() # + loss2.item() + loss3.item()
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + neuralef_loss + neuralef_reg,
+                loss + neuralef_loss + neuralef_reg, # + loss2 + loss3
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + neuralef_loss + neuralef_reg).backward()
+            (loss + neuralef_loss + neuralef_reg).backward() # + loss2 + loss3
             optimizer.step()
 
         num_updates += 1
-        lr_scheduler.step(float(num_updates)/len(data_loader))
+        if isinstance(lr_scheduler, PolynomialLR):
+            lr_scheduler.step_update(num_updates=num_updates)
+        else:
+            lr_scheduler.step(float(num_updates)/len(data_loader))
 
         torch.cuda.synchronize()
         logger.update(
             loss=loss.item(),
+            # loss2=loss2.item(),
+            # loss3=loss3.item(),
+            acc=acc.item(),
+            # acc2=acc2.item(),
+            # acc3=acc3.item(),
             neuralef_loss=neuralef_loss.item(),
             neuralef_reg=neuralef_reg.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
@@ -82,10 +108,15 @@ def tune_clusters(
     cached_Psi = []
     for i, batch in tqdm.tqdm(enumerate(data_loader), 'init cluster centers'):
         im = batch["im"].to(ptu.device)
-        Psi = model.forward(im, return_eigenmaps=True)
+        Psi = model.forward(im, return_features=True)
+        Psi = Psi.view(-1, Psi.shape[-1])
         cached_Psi.append(Psi)
         torch.cuda.synchronize()
-        if i == 99 and Psi.shape[-1] > 256:
+        if i == 39 and (model.kmeans_n_cls >= 700 or Psi.shape[-1] >= 2048):
+            break
+        if i == 69 and (Psi.shape[-1] > 256 or model.kmeans_n_cls > 400):
+            break
+        if i == 99 and (Psi.shape[-1] > 256 or model.kmeans_n_cls > 200):
             break
         if i == 149:
             break
@@ -100,6 +131,7 @@ def tune_clusters(
     model.cluster_centers.data.copy_(cluster_centers)
     onehot_assignments = torch.nn.functional.one_hot(assignments, model.kmeans_n_cls)
     model.num_per_cluster.copy_(onehot_assignments.long().sum(0))
+    del kmeans, onehot_assignments
 
     if simulate_one_epoch:
         model.train()
@@ -107,12 +139,16 @@ def tune_clusters(
         data_loader.set_epoch(1000)
         for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
             im = batch["im"].to(ptu.device)
-            model.clustering(model.forward(im, return_eigenmaps=True))
+            Psi = model.forward(im, return_features=True)
+            Psi = Psi.view(-1, Psi.shape[-1])
+            model.clustering(Psi)
             torch.cuda.synchronize()
         data_loader.set_epoch(1001)
         for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
             im = batch["im"].to(ptu.device)
-            model.clustering(model.forward(im, return_eigenmaps=True))
+            Psi = model.forward(im, return_features=True)
+            Psi = Psi.view(-1, Psi.shape[-1])
+            model.clustering(Psi)
             torch.cuda.synchronize()
 
 @torch.no_grad()
@@ -170,13 +206,13 @@ def evaluate(
     for k in keys:
         val_seg_pred[k] = maps[val_seg_pred[k]]
     
-    list_keys = list(keys)
-    # CRF in multi-process
-    results = joblib.Parallel(n_jobs=16, backend='multiprocessing', verbose=9)(
-        [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls) for i in range(len(list_keys))]
-    )
-    for i in range(len(list_keys)):
-        val_seg_pred[list_keys[i]] = results[i]
+    # list_keys = list(keys)
+    # # CRF in multi-process
+    # results = joblib.Parallel(n_jobs=16, backend='multiprocessing', verbose=9)(
+    #     [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls) for i in range(len(list_keys))]
+    # )
+    # for i in range(len(list_keys)):
+    #     val_seg_pred[list_keys[i]] = results[i]
 
     # the following visualization code works only for ade20k
     vis_dir = log_dir / str(epoch)
@@ -249,7 +285,7 @@ def optimal_map(val_seg_gt, val_seg_pred, kmeans_n_cls, n_cls, ignore_indice):
     v1, v2 = np.concatenate(v1), np.concatenate(v2)
 
     # print('Using majority voting for matching')
-    # match = eval_utils.majority_vote(v2, v1, preds_k=kmeans_n_cls, targets_k=n_cls)
+    # match = eval_utils.majority_vote(v2, v1, preds_k=kmeans_n_cls, targets_k=n_cls, n_jobs=8)
     # return np.array([aa[1] for aa in match])
 
     counts = np.zeros((kmeans_n_cls, n_cls))

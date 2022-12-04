@@ -9,7 +9,7 @@ import timm
 from timm.models.helpers import load_pretrained, load_custom_pretrained
 from timm.models.vision_transformer import default_cfgs
 
-from model.psi import MLP, ResMLP
+from model.psi import MLP, ResMLP, MyTransformer
 from model.segmenter import Segmenter
 import utils.torch as ptu
 
@@ -38,26 +38,27 @@ def create_backbone(backbone_cfg):
         backbone_cfg["image_size"][1],
     )
     model = VisionTransformer(**backbone_cfg)
-    if "deit" in backbone:
-        load_pretrained(model, default_cfg, filter_fn=checkpoint_filter_fn)
+    if "deit" in backbone or 'dino' in backbone:
+        load_pretrained(model, default_cfg, filter_fn=checkpoint_filter_fn, strict=True)
     else:
         load_custom_pretrained(model, default_cfg)
 
     return model
 
-def create_psi(backbone, psi_cfg):
+def create_psi(backbone, psi_cfg, upsample_factor):
     psi_cfg = psi_cfg.copy()
     psi_cfg["d_backbone"] = backbone.d_model 
-    model_fn = ResMLP if psi_cfg['res'] == True else MLP
+    model_fn = MyTransformer if psi_cfg['transformer'] else (ResMLP if psi_cfg['res'] == True else MLP)
+    del psi_cfg['transformer']
     del psi_cfg['res']
-    psi = model_fn(**psi_cfg)
+    psi = model_fn(**psi_cfg, upsample_factor=upsample_factor)
     return psi
 
 
-def create_segmenter(model_cfg):
+def create_segmenter(model_cfg, upsample_factor):
     model_cfg = model_cfg.copy()
     backbone = create_backbone(model_cfg['backbone'])
-    psi = create_psi(backbone, model_cfg['psi'])
+    psi = create_psi(backbone, model_cfg['psi'], upsample_factor)
     model = Segmenter(backbone, psi, n_cls=model_cfg["n_cls"], kmeans_cfg=model_cfg['kmeans'], 
         neuralef_loss_cfg=model_cfg['neuralef'], is_baseline=model_cfg['is_baseline'])
     return model
