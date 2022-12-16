@@ -5,10 +5,14 @@ import torch
 import torch.distributed as dist
 
 import utils.torch as ptu
-
+import numpy
 
 def init_process(port=12345, backend="nccl"):
     print(f"Starting process with rank {ptu.dist_rank}...", flush=True)
+
+    if port is None:
+        port = numpy.random.randint(12345, 22345)
+
 
     if "SLURM_STEPS_GPUS" in os.environ:
         gpu_ids = os.environ["SLURM_STEP_GPUS"].split(",")

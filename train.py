@@ -1,8 +1,7 @@
-import sys
+import sys, os
 from pathlib import Path
 import yaml
 import json
-import numpy as np
 import torch
 import click
 import argparse
@@ -21,54 +20,51 @@ from timm.utils import NativeScaler
 from contextlib import suppress
 
 from utils.distributed import sync_model
-from engine import train_one_epoch, evaluate, tune_clusters
+from engine import train_one_epoch, evaluate, tune_clusters, fit_pca
 
-
+import warnings
+warnings.filterwarnings('ignore')
 
 @click.command(help="")
 @click.option("--log-dir", type=str, help="logging directory")
 @click.option("--dataset", type=str)
-@click.option("--port", default=12345, type=int)
+@click.option("--port", default=None, type=int)
 @click.option("--im-size", default=None, type=int, help="dataset resize size")
 @click.option("--crop-size", default=None, type=int)
 @click.option("--window-size", default=None, type=int)
 @click.option("--window-stride", default=None, type=int)
 @click.option("--backbone", default="vit_small_patch16_384", type=str)
-@click.option("--optimizer", default="adamw", type=str)
+@click.option("--optimizer", default="adam", type=str)
 @click.option("--scheduler", default="cosine", type=str)
 @click.option("--weight-decay", default=0.0, type=float)
 @click.option("--dropout", default=0.0, type=float)
 @click.option("--batch-size", default=None, type=int)
 @click.option("--epochs", default=None, type=int)
-@click.option("-lr", "--learning-rate", default=0.01, type=float)
+@click.option("-lr", "--learning-rate", default=None, type=float)
 @click.option("--normalization", default=None, type=str)
 @click.option("--eval-freq", default=None, type=int)
 @click.option("--amp/--no-amp", default=False, is_flag=True)
 @click.option("--resume/--no-resume", default=True, is_flag=True)
-@click.option("--kernel", default=None, type=str)
-@click.option("--input_l2_normalize/--no-input_l2_normalize", default=False, is_flag=True)
-@click.option("--alpha", default=None, type=float)
-@click.option("--psi_res/--no-psi_res", default=False, is_flag=True)
-@click.option("--psi_transformer/--no-psi_transformer", default=False, is_flag=True)
+
+@click.option("--psi_num_blocks", default=None, type=int)
 @click.option("--psi_k", default=None, type=int)
-@click.option("--psi_num_features", default=None, type=int)
-@click.option("--psi_norm_type", default=None, type=str)
-@click.option("--psi_act_type", default=None, type=str)
-@click.option("--psi_num_layers", default=None, type=int)
-@click.option("--psi_projector/--no-psi_projector", default=False, is_flag=True)
-@click.option("--t_for_neuralef", default=None, type=float)
-@click.option("--pixelwise_adj_weight", default=0, type=float)
-@click.option("--pixelwise_adj_div_factor", default=1, type=float)
-@click.option("--pixelwise_adj_knn", default=10, type=int)
-@click.option("--instancewise/--no-instancewise", default=False, is_flag=True)
-@click.option("--asymmetric/--no-asymmetric", default=False, is_flag=True)
-@click.option("--no_sg/--no-no_sg", default=False, is_flag=True)
-@click.option("--upsample_factor", default=1, type=int)
-@click.option("--is_baseline/--no-is_baseline", default=False, is_flag=True)
+@click.option("--psi_mlp_dim", default=None, type=int)
+
+@click.option("--kmeans_feature", default=None, type=str)
+@click.option("--kmeans_tradeoff", default=None, type=float)
 @click.option("--kmeans_n_cls", default=None, type=int)
-@click.option("--kmeans_use_hidden_outputs/--no-kmeans_use_hidden_outputs", default=False, is_flag=True)
-@click.option("--kmeans_l2_normalize/--no-kmeans_l2_normalize", default=False, is_flag=True)
-@click.option("--cache_size", default=100, type=int)
+@click.option("--kmeans_dim", default=None, type=int)
+@click.option("--kmeans_tau", default=None, type=float)
+
+@click.option("--alpha", default=None, type=float)
+@click.option("--no_sg/--no-no_sg", default=False, is_flag=True)
+@click.option("--num_nearestn_feature", default=None, type=int)
+@click.option("--num_nearestn_pixel1", default=None, type=int)
+@click.option("--num_nearestn_pixel2", default=None, type=int)
+@click.option("--pixelwise_weight", default=None, type=float)
+
+@click.option("--eval-only/--no-eval-only", default=False, is_flag=True)
+@click.option("--linear_probe_given", default=None, type=str)
 
 def main(
     log_dir,
@@ -90,74 +86,69 @@ def main(
     eval_freq,
     amp,
     resume,
-    kernel,
-    input_l2_normalize,
-    alpha,
-    psi_res,
-    psi_transformer,
+    psi_num_blocks,
     psi_k,
-    psi_num_features,
-    psi_norm_type,
-    psi_act_type,
-    psi_num_layers,
-    psi_projector,
-    t_for_neuralef,
-    pixelwise_adj_weight,
-    pixelwise_adj_div_factor,
-    pixelwise_adj_knn,
-    instancewise,
-    asymmetric,
-    no_sg,
-    upsample_factor,
-    is_baseline,
+    psi_mlp_dim,
+    kmeans_feature,
+    kmeans_tradeoff,
     kmeans_n_cls,
-    kmeans_use_hidden_outputs,
-    kmeans_l2_normalize,
-    cache_size
+    kmeans_dim,
+    kmeans_tau,
+    alpha,
+    no_sg,
+    num_nearestn_feature,
+    num_nearestn_pixel1,
+    num_nearestn_pixel2,
+    pixelwise_weight,
+    eval_only,
+    linear_probe_given
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
     distributed.init_process(port)
 
+    if eval_only:
+        resume = True
+    
+    is_linear_probe=(linear_probe_given is not None)
+
     # set up configuration
     cfg = config.load_config()
     backbone_cfg = cfg["backbone"][backbone]
+
     psi_cfg = cfg["psi"]
-    psi_cfg['res'] = psi_res
-    psi_cfg['transformer'] = psi_transformer
+    if psi_num_blocks is not None:
+        psi_cfg['num_blocks'] = psi_num_blocks
     if psi_k is not None:
         psi_cfg['k'] = psi_k
-    if psi_num_features is not None:
-        psi_cfg['num_features'] = psi_num_features
-    if psi_norm_type is not None:
-        psi_cfg['norm_type'] = psi_norm_type
-    if psi_act_type is not None:
-        psi_cfg['act_type'] = psi_act_type
-    psi_cfg['projector'] = psi_projector
-    if psi_num_layers is not None:
-        psi_cfg['num_layers'] = psi_num_layers
+    if psi_mlp_dim is not None:
+        psi_cfg['mlp_dim'] = psi_mlp_dim
+
     kmeans_cfg = cfg["kmeans"]
+    if kmeans_feature is not None:
+        kmeans_cfg['feature'] = kmeans_feature
+    if kmeans_tradeoff is not None:
+        kmeans_cfg['tradeoff'] = kmeans_tradeoff
     if kmeans_n_cls is not None:
         kmeans_cfg['n_cls'] = kmeans_n_cls
-    kmeans_cfg['use_hidden_outputs'] = kmeans_use_hidden_outputs
-    kmeans_cfg['l2_normalize'] = kmeans_l2_normalize
+    if kmeans_dim is not None:
+        kmeans_cfg['dim'] = kmeans_dim
+    if kmeans_tau is not None:
+        kmeans_cfg['tau'] = kmeans_tau
+    
     neuralef_loss_cfg = cfg['neuralef']
-    if kernel is not None:
-        neuralef_loss_cfg['kernel'] = kernel
     if alpha is not None:
         neuralef_loss_cfg['alpha'] = alpha
-    neuralef_loss_cfg['input_l2_normalize'] = input_l2_normalize
-    if t_for_neuralef is not None:
-        neuralef_loss_cfg['t'] = t_for_neuralef
-    neuralef_loss_cfg['instancewise'] = instancewise
-    neuralef_loss_cfg['asymmetric'] = asymmetric
     neuralef_loss_cfg['no_sg'] = no_sg
-    
-    neuralef_loss_cfg['upsample_factor'] = upsample_factor
-    neuralef_loss_cfg['pixelwise_adj_weight'] = pixelwise_adj_weight
-    neuralef_loss_cfg['pixelwise_adj_div_factor'] = pixelwise_adj_div_factor
-    neuralef_loss_cfg['pixelwise_adj_knn'] = pixelwise_adj_knn
-    neuralef_loss_cfg['cache_size'] = cache_size
+    if num_nearestn_feature is not None:
+        neuralef_loss_cfg['num_nearestn_feature'] = num_nearestn_feature
+    if num_nearestn_pixel1 is not None:
+        neuralef_loss_cfg['num_nearestn_pixel1'] = num_nearestn_pixel1
+    if num_nearestn_pixel2 is not None:
+        neuralef_loss_cfg['num_nearestn_pixel2'] = num_nearestn_pixel2
+    if pixelwise_weight is not None:
+        neuralef_loss_cfg['pixelwise_weight'] = pixelwise_weight
+
     dataset_cfg = cfg["dataset"][dataset]
 
     # model config
@@ -256,18 +247,15 @@ def main(
     # model
     net_kwargs = variant["net_kwargs"]
     net_kwargs["n_cls"] = n_cls
-    net_kwargs['is_baseline'] = is_baseline
-    model = create_segmenter(net_kwargs, neuralef_loss_cfg['upsample_factor'])
+    model = create_segmenter(net_kwargs)
+    if is_linear_probe:
+        ptu.freeze_all_layers_(model.psi)
     model.to(ptu.device)
 
     # optimizer
     optimizer_kwargs = variant["optimizer_kwargs"]
     optimizer_kwargs["iter_max"] = len(train_loader) * optimizer_kwargs["epochs"]
     optimizer_kwargs["iter_warmup"] = 0.0
-    # if psi_cfg['transformer'] and optimizer_kwargs['opt'] == 'adamw':
-    #     optimizer_kwargs["warmup_lr"] = 1e-6
-    #     optimizer_kwargs["warmup_epochs"] = 2
-    # else:
     optimizer_kwargs["warmup_lr"] = 1e-5
     optimizer_kwargs["warmup_epochs"] = 0
     optimizer_kwargs["cooldown_epochs"] = 0
@@ -276,14 +264,7 @@ def main(
     opt_vars = vars(opt_args)
     for k, v in optimizer_kwargs.items():
         opt_vars[k] = v
-    if optimizer_kwargs['opt'] == 'our_lars':
-        from utils.torch import LARS, exclude_bias_and_norm
-        optimizer = LARS(model.parameters(),
-                        lr=optimizer_kwargs['lr'], weight_decay=optimizer_kwargs['weight_decay'],
-                        weight_decay_filter=exclude_bias_and_norm,
-                        lars_adaptation_filter=exclude_bias_and_norm)
-    else:
-        optimizer = create_optimizer(opt_args, model)
+    optimizer = create_optimizer(opt_args, [p for p in model.parameters() if p.requires_grad])
     if num_epochs > 0:
         lr_scheduler = create_scheduler(opt_args, optimizer)
     amp_autocast = suppress
@@ -298,15 +279,36 @@ def main(
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model_ckpt = checkpoint["model"]
         for k in list(model_ckpt.keys()):
-            if 'cluster' in k or 'online_head' in k:
-                if model_ckpt[k].shape[0] != kmeans_cfg['n_cls']:
+            if 'cluster_centers' in k:
+                if model_ckpt[k].shape[1] != model.clustering_feature_dim or model_ckpt[k].shape[0] != kmeans_cfg['n_cls']:
                     del model_ckpt[k]
+                    del model_ckpt[k.replace("cluster_centers", "num_per_cluster")]
+            if 'online_head.weight' in k:
+                if model_ckpt[k].shape[1] != model.clustering_feature_dim:
+                    del model_ckpt[k]
+                    del model_ckpt[k.replace("weight", "bias")]
         print(model.load_state_dict(model_ckpt, strict=False))
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        if loss_scaler and "loss_scaler" in checkpoint:
-            loss_scaler.load_state_dict(checkpoint["loss_scaler"])
-        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        if not eval_only:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            if loss_scaler and "loss_scaler" in checkpoint:
+                loss_scaler.load_state_dict(checkpoint["loss_scaler"])
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         variant["algorithm_kwargs"]["start_epoch"] = checkpoint["epoch"] + 1
+    elif is_linear_probe:
+        print(f"Linear probe from: {linear_probe_given}")
+        if os.path.exists(linear_probe_given):
+            checkpoint = torch.load(linear_probe_given, map_location="cpu")
+            model_ckpt = checkpoint["model"]
+            for k in list(model_ckpt.keys()):
+                if 'cluster_centers' in k:
+                    del model_ckpt[k]
+                    del model_ckpt[k.replace("cluster_centers", "num_per_cluster")]
+                if 'online_head.weight' in k:
+                    del model_ckpt[k]
+                    del model_ckpt[k.replace("weight", "bias")]
+            print(model.load_state_dict(model_ckpt, strict=False))
+        else:
+            print(f"{linear_probe_given} not exist")
     else:
         sync_model(log_dir, model)
 
@@ -339,17 +341,20 @@ def main(
     print(model_without_ddp.psi)
 
     for epoch in range(start_epoch, num_epochs):
+        if eval_only:
+            break
+
         # train for one epoch
-        if not is_baseline:
-            train_logger = train_one_epoch(
-                model,
-                train_loader,
-                optimizer,
-                lr_scheduler,
-                epoch,
-                amp_autocast,
-                loss_scaler,
-            )
+        train_logger = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            lr_scheduler,
+            epoch,
+            amp_autocast,
+            loss_scaler,
+            is_linear_probe=is_linear_probe
+        )
 
         # save checkpoint
         if ptu.dist_rank == 0:
@@ -381,8 +386,13 @@ def main(
                 f.write(json.dumps(log_stats) + "\n")
 
     # evaluate
-    tune_clusters(model, train_loader, kmeans_cfg['l2_normalize'], simulate_one_epoch=True)
+    if not is_linear_probe:
+        fit_pca(model, train_loader)
+        tune_clusters(model, train_loader, simulate_one_epoch=True)
+
     eval_logger = evaluate(
+        is_linear_probe,
+        dataset,
         num_epochs,
         model,
         val_loader,
@@ -391,10 +401,19 @@ def main(
         window_stride,
         amp_autocast,
         log_dir,
-        is_baseline
     )
     print(f"Stats ['final']:", eval_logger, flush=True)
     print("")
+
+    # save checkpoint
+    if ptu.dist_rank == 0:
+        snapshot = dict(
+            model=model_without_ddp.state_dict(),
+            n_cls=model_without_ddp.n_cls,   
+        )
+        snapshot["epoch"] = num_epochs
+        torch.save(snapshot, log_dir / "checkpoint_final.pth")
+        del snapshot
 
     distributed.barrier()
     distributed.destroy_process()

@@ -220,7 +220,7 @@ def main(
 
     # start distributed mode
     ptu.set_gpu_mode(True)
-    distributed.init_process()
+    distributed.init_process(port=None)
 
     model, variant = load_model(model_path)
     patch_size = model.patch_size

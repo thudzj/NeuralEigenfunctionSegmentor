@@ -74,6 +74,22 @@ backbone:
     n_layers: 12
     normalization: vit
     distilled: false
+  vit_base_patch8_224_in21k:
+    image_size: 224
+    patch_size: 8
+    d_model: 768
+    n_heads: 12
+    n_layers: 12
+    normalization: vit
+    distilled: false
+  vit_base_patch8_224:
+    image_size: 224
+    patch_size: 8
+    d_model: 768
+    n_heads: 12
+    n_layers: 12
+    normalization: vit
+    distilled: false
   vit_tiny_patch16_384:
     image_size: 384
     patch_size: 16
@@ -128,32 +144,27 @@ backbone:
     n_layers: 24
     normalization: vit
 psi:
-  transformer: false
-  res: false
-  num_features: 2048
-  k: 150
-  num_layers: 4
-  norm_type: bn
-  act_type: relu
-  projector: false
+  num_blocks: 3
+  k: 2048
+  mlp_dim: 576
+  num_heads: 18
+  head_dim: 64
 kmeans:
   n_cls: 150
   momentum: auto
-  l2_normalize: false
-  use_hidden_outputs: false
+  feature: temp
+  tradeoff: 1
+  dim: 0
+  tau: 1
 neuralef:
-  upsample_factor: 1
-  kernel: normalized_adjacency_thresholded
-  pixelwise_adj_weight: 0
-  pixelwise_adj_div_factor: 1
-  pixelwise_adj_knn: 10
-  input_l2_normalize: false
-  cache_size: 100
   t: 1
-  alpha: 2
+  alpha: 0.02
   no_sg: false
-  asymmetric: false
-  instancewise: false
+  pixelwise_adj_div_factor: 1
+  num_nearestn_feature: 32
+  num_nearestn_pixel1: 10
+  num_nearestn_pixel2: 5
+  pixelwise_weight: 0.5
 dataset:
   ade20k:
     epochs: 64

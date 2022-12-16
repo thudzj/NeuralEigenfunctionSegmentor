@@ -10,14 +10,14 @@ import numpy as np
 import tqdm, os
 from data.utils import dataset_cat_description, seg_to_rgb
 from data.ade20k import ADE20K_CATS_PATH
+from data.pascal_context import PASCAL_CONTEXT_CATS_PATH
+from data.cityscapes import CITYSCAPES_CATS_PATH
 from PIL import Image
 from fast_pytorch_kmeans import KMeans
 # import denseCRF
 import eval_utils
 import joblib
-
 from timm import optim
-
 from optim.scheduler import PolynomialLR
 
 
@@ -29,14 +29,18 @@ def train_one_epoch(
     epoch,
     amp_autocast,
     loss_scaler,
+    is_linear_probe
 ):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
     logger = MetricLogger(delimiter="  ")
     header = f"Epoch: [{epoch}]"
-    print_freq = 100
+    print_freq = 100 if len(data_loader) >= 100 else 50
 
-    model.train()
-    model.backbone.eval()
+    if is_linear_probe:
+        model.eval()
+    else:
+        model.train()
+        model.backbone.eval()
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
     batch_size = None
@@ -49,31 +53,33 @@ def train_one_epoch(
             break
 
         with amp_autocast():
-            seg_pred, neuralef_loss, neuralef_reg = model.forward(im, return_neuralef_loss=True) #, seg_gt=seg_gt, seg_pred2, seg_pred3
+            if is_linear_probe:
+                seg_pred = model.forward(im)
+                neuralef_loss, neuralef_reg = torch.tensor([0.]).to(ptu.device), torch.tensor([0.]).to(ptu.device)
+            else:
+                seg_pred, neuralef_loss, neuralef_reg = model.forward(im, return_neuralef_loss=True)
             loss = criterion(seg_pred, seg_gt)
             # loss2 = criterion(seg_pred2, seg_gt)
-            # loss3 = criterion(seg_pred3, seg_gt)
 
             with torch.no_grad():
                 mask_ = (seg_gt != IGNORE_LABEL).float()
                 mask_sum_ = mask_.sum()
                 acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
                 # acc2 = ((seg_pred2.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
-                # acc3 = ((seg_pred3.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
         
-        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item() # + loss2.item() + loss3.item()
+        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item() # + loss2.item()
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + neuralef_loss + neuralef_reg, # + loss2 + loss3
+                loss + neuralef_loss + neuralef_reg, # + loss2
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + neuralef_loss + neuralef_reg).backward() # + loss2 + loss3
+            (loss + neuralef_loss + neuralef_reg).backward() # + loss2
             optimizer.step()
 
         num_updates += 1
@@ -86,10 +92,8 @@ def train_one_epoch(
         logger.update(
             loss=loss.item(),
             # loss2=loss2.item(),
-            # loss3=loss3.item(),
             acc=acc.item(),
             # acc2=acc2.item(),
-            # acc3=acc3.item(),
             neuralef_loss=neuralef_loss.item(),
             neuralef_reg=neuralef_reg.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
@@ -97,62 +101,95 @@ def train_one_epoch(
     return logger
 
 @torch.no_grad()
+def fit_pca(
+    model,
+    data_loader,
+):
+    dim = model.kmeans_cfg['dim']
+    if dim == 0:
+        return 
+
+    model.eval()
+    data_loader.set_epoch(997)
+    mean, count = 0, 0
+    for i, batch in tqdm.tqdm(enumerate(data_loader), 'est feature mean'):
+        im = batch["im"].to(ptu.device)
+        feature = model.forward(im, return_features=True)
+        mean += feature.view(-1, feature.shape[-1]).sum(0)
+        count += feature.numel() // feature.shape[-1]        
+        torch.cuda.synchronize()
+    mean /= count
+
+    cov = 0
+    for i, batch in tqdm.tqdm(enumerate(data_loader), 'est feature cov'):
+        im = batch["im"].to(ptu.device)
+        feature = model.forward(im, return_features=True)
+        feature = feature.view(-1, feature.shape[-1]) - mean
+        cov += feature.T @ feature
+        torch.cuda.synchronize()
+    cov /= count
+
+    eig_values, eig_vectors = torch.linalg.eigh(cov)
+    proj_matrix = eig_vectors[:, range(-1, -(dim+1), -1)]
+
+    model.register_buffer("feature_mean", mean) 
+    model.register_buffer("proj_matrix", proj_matrix) 
+
+@torch.no_grad()
 def tune_clusters(
     model,
     data_loader,
-    l2_normalize,
     simulate_one_epoch=False,
 ):
     model.eval()
     data_loader.set_epoch(999)
-    cached_Psi = []
+    cached_features = []
     for i, batch in tqdm.tqdm(enumerate(data_loader), 'init cluster centers'):
         im = batch["im"].to(ptu.device)
-        Psi = model.forward(im, return_features=True)
-        Psi = Psi.view(-1, Psi.shape[-1])
-        cached_Psi.append(Psi)
+        feature = model.forward(im, return_features=True)
+        feature = feature.reshape(-1, feature.shape[-1])
+        cached_features.append(feature)
         torch.cuda.synchronize()
-        if i == 39 and (model.kmeans_n_cls >= 700 or Psi.shape[-1] >= 2048):
+        if sum([item.numel() for item in cached_features]) > 2000000000:
             break
-        if i == 69 and (Psi.shape[-1] > 256 or model.kmeans_n_cls > 400):
+    cached_features = torch.cat(cached_features)
+    
+    while 1:
+        try:
+            kmeans = KMeans(n_clusters=model.kmeans_n_cls, mode='euclidean', verbose=1)
+            assignments = kmeans.fit_predict(cached_features)
             break
-        if i == 99 and (Psi.shape[-1] > 256 or model.kmeans_n_cls > 200):
-            break
-        if i == 149:
-            break
-    cached_Psi = torch.cat(cached_Psi)
-    if l2_normalize:
-        cached_Psi = torch.nn.functional.normalize(cached_Psi, dim=-1)
-    kmeans = KMeans(n_clusters=model.kmeans_n_cls, mode='euclidean', verbose=1)
-    assignments = kmeans.fit_predict(cached_Psi)
-    del cached_Psi
-    cached_Psi = None
-    cluster_centers = kmeans.centroids
-    model.cluster_centers.data.copy_(cluster_centers)
+        except Exception as e:
+            cached_features = cached_features[:int(len(cached_features)*0.8)]
+
+    del cached_features
+    cached_features = None
+
+    model.register_buffer("cluster_centers", kmeans.centroids) 
     onehot_assignments = torch.nn.functional.one_hot(assignments, model.kmeans_n_cls)
-    model.num_per_cluster.copy_(onehot_assignments.long().sum(0))
+    model.register_buffer("num_per_cluster", onehot_assignments.long().sum(0))
     del kmeans, onehot_assignments
 
     if simulate_one_epoch:
-        model.train()
-        model.backbone.eval()
         data_loader.set_epoch(1000)
         for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
             im = batch["im"].to(ptu.device)
-            Psi = model.forward(im, return_features=True)
-            Psi = Psi.view(-1, Psi.shape[-1])
-            model.clustering(Psi)
+            feature = model.forward(im, return_features=True)
+            feature = feature.reshape(-1, feature.shape[-1])
+            model.clustering(feature, update=True)
             torch.cuda.synchronize()
         data_loader.set_epoch(1001)
         for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
             im = batch["im"].to(ptu.device)
-            Psi = model.forward(im, return_features=True)
-            Psi = Psi.view(-1, Psi.shape[-1])
-            model.clustering(Psi)
+            feature = model.forward(im, return_features=True)
+            feature = feature.reshape(-1, feature.shape[-1])
+            model.clustering(feature, update=True)
             torch.cuda.synchronize()
 
 @torch.no_grad()
 def evaluate(
+    is_linear_probe,
+    dataset,
     epoch,
     model,
     data_loader,
@@ -161,7 +198,6 @@ def evaluate(
     window_stride,
     amp_autocast,
     log_dir,
-    is_baseline,
 ):
     model_without_ddp = model
     if hasattr(model, "module"):
@@ -169,6 +205,18 @@ def evaluate(
     logger = MetricLogger(delimiter="  ")
     header = "Eval:"
     print_freq = 400
+
+    if dataset == 'ade20k':
+        cat_names, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
+        val_img_folder =  os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/'
+    elif dataset == 'pascal_context':
+        cat_names, cat_colors = dataset_cat_description(PASCAL_CONTEXT_CATS_PATH)
+        val_img_folder = os.path.expandvars("$DATASET/") + 'pcontext/VOCdevkit/VOC2010/JPEGImages/'
+    elif dataset == 'cityscapes':
+        cat_names, cat_colors = dataset_cat_description(CITYSCAPES_CATS_PATH)
+        val_img_folder =  os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/'
+    else:
+        assert 0
 
     val_seg_pred = {}
     model.eval()
@@ -182,6 +230,7 @@ def evaluate(
 
         with amp_autocast():
             seg_pred = utils.inference(
+                is_linear_probe,
                 model_without_ddp,
                 ims,
                 ims_metas,
@@ -194,28 +243,28 @@ def evaluate(
 
         seg_pred = seg_pred.cpu().numpy()
         val_seg_pred[filename] = seg_pred
-        if len(val_seg_pred) == 9 and is_baseline:
-            print(seg_pred.max(), seg_pred.min())
-            break
 
     val_seg_pred = gather_data(val_seg_pred)
-    # find the mapping from ground-truth labels to clustering assignments
-    maps = optimal_map(val_seg_gt, val_seg_pred, model.kmeans_n_cls, data_loader.unwrapped.n_cls, IGNORE_LABEL)
-    # rotate the clustering assignments
     keys = val_seg_pred.keys()
-    for k in keys:
-        val_seg_pred[k] = maps[val_seg_pred[k]]
+
+    if not is_linear_probe:
+        # find the mapping from ground-truth labels to clustering assignments
+        maps = optimal_map(val_seg_gt, val_seg_pred, model.kmeans_n_cls, data_loader.unwrapped.n_cls, IGNORE_LABEL, iou=False)
+        # rotate the clustering assignments
+        for k in keys:
+            val_seg_pred[k] = maps[val_seg_pred[k]]
     
     # list_keys = list(keys)
     # # CRF in multi-process
     # results = joblib.Parallel(n_jobs=16, backend='multiprocessing', verbose=9)(
-    #     [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls) for i in range(len(list_keys))]
+    #     [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls, val_img_folder) 
+    #           for i in range(len(list_keys))]
     # )
     # for i in range(len(list_keys)):
     #     val_seg_pred[list_keys[i]] = results[i]
 
     # the following visualization code works only for ade20k
-    vis_dir = log_dir / str(epoch)
+    vis_dir = log_dir / (str(epoch) + model.kmeans_cfg['feature'] + ("_linearprobe" if is_linear_probe else ""))
     vis_dir.mkdir(parents=True, exist_ok=True)
     cat_names, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
     for i, k in enumerate(keys):
@@ -223,7 +272,7 @@ def evaluate(
         seg_rgb = (255 * seg_rgb.cpu().numpy()).astype(np.uint8)
         pil_seg = Image.fromarray(seg_rgb[0])
 
-        pil_im = Image.open(os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/' + k).copy()
+        pil_im = Image.open(val_img_folder + k).copy()
         dst = Image.new('RGB', (pil_im.width*3, pil_im.height))
         dst.paste(pil_im, (0, 0))
         dst.paste(pil_seg, (pil_im.width, 0))
@@ -247,7 +296,7 @@ def evaluate(
 
     return logger
 
-def process(k, val_seg_pred_, n_cls):
+def process(k, val_seg_pred_, n_cls, val_img_folder):
     
     unary_potentials = np.transpose(
         np.reshape(
@@ -256,7 +305,7 @@ def process(k, val_seg_pred_, n_cls):
         ), 
         (2, 0, 1)
     )
-    image = np.array(Image.open(os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/' + k).convert('RGB')).astype(np.uint8)
+    image = np.array(Image.open(val_img_folder + k).convert('RGB')).astype(np.uint8)
 
     ITER_MAX= 10
     POS_W= 3
@@ -275,7 +324,7 @@ def process(k, val_seg_pred_, n_cls):
     prob = postprocessor(image, unary_potentials)
     return np.argmax(prob, axis=0)
 
-def optimal_map(val_seg_gt, val_seg_pred, kmeans_n_cls, n_cls, ignore_indice):
+def optimal_map(val_seg_gt, val_seg_pred, kmeans_n_cls, n_cls, ignore_indice, iou=False):
    
     # stats of i-th ground-truth laebl to j-th clustering assignment
     v1, v2 = [], []
@@ -305,13 +354,14 @@ def optimal_map(val_seg_gt, val_seg_pred, kmeans_n_cls, n_cls, ignore_indice):
         counts[i, vv] = cc
     if ignore_indice >= n_cls:
         assert counts.sum() + count_ignore_indice.sum() == len(v1), (counts.sum(), count_ignore_indice.sum(), len(v1))
-        maps = np.argmax(counts, -1) #np.concatenate([counts, count_ignore_indice.reshape((-1, 1))], 1)
         # for i in range(maps.shape[0]):
         #     if maps[i] == counts.shape[1]:
         #         maps[i] = ignore_indice
         #         print("cluster", i, "set to ignore_indice", ignore_indice)
     else:
         assert counts.sum() == len(v1), (counts.sum(), len(v1))
-        maps = np.argmax(counts, -1)
+    if iou:
+        counts = counts / (counts.sum(0, keepdims=True) + counts.sum(1, keepdims=True) - counts).clip(1e-8)
+    maps = np.argmax(counts, -1)
     return maps
 

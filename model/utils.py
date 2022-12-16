@@ -149,6 +149,7 @@ def merge_windows(windows, window_size, ori_shape):
 
 
 def inference(
+    is_linear_probe,
     model,
     ims,
     ims_metas,
@@ -157,7 +158,7 @@ def inference(
     window_stride,
     batch_size,
 ):
-    C = model.kmeans_n_cls
+    C = model.n_cls if is_linear_probe else model.kmeans_n_cls
     model.eval()
     seg_map = torch.zeros((C, ori_shape[0], ori_shape[1]), device=ptu.device)
     for im, im_metas in zip(ims, ims_metas):

@@ -3,7 +3,6 @@ from joblib import Parallel
 from joblib.parallel import delayed
 from scipy.optimize import linear_sum_assignment
 
-import numpy as np
 import pydensecrf.densecrf as dcrf
 import pydensecrf.utils as utils
 
