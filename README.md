@@ -76,23 +76,89 @@ CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/21 --dataset ade20k --no-r
     'original_feature'            pixel_accuracy: 61.4100 (61.4100)  mean_accuracy: 32.0300 (32.0300)  mean_iou: 21.0500 (21.0500)
     'original_all_feature'        pixel_accuracy: 61.0500 (61.0500)  mean_accuracy: 31.6400 (31.6400)  mean_iou: 20.4300 (20.4300)
     'hidden_feature'              pixel_accuracy: 61.7600 (61.7600)  mean_accuracy: 17.4200 (17.4200)  mean_iou: 12.3500 (12.3500)
-    'original&hidden_feature'+lp 
-    'original_feature'+lp 
-    'original_all_feature'+lp 
-    'hidden_feature'+lp 
+    'original&hidden_feature'+lp  pixel_accuracy: 78.5600 (78.5600)  mean_accuracy: 53.7600 (53.7600)  mean_iou: 42.1200 (42.1200)
+    'original_feature'+lp         pixel_accuracy: 76.3900 (76.3900)  mean_accuracy: 52.1600 (52.1600)  mean_iou: 40.7700 (40.7700)
+    'original_all_feature'+lp     pixel_accuracy: 78.3500 (78.3500)  mean_accuracy: 53.1500 (53.1500)  mean_iou: 42.1400 (42.1400)
+    'hidden_feature'+lp           pixel_accuracy: 77.9000 (77.9000)  mean_accuracy: 50.0300 (50.0300)  mean_iou: 39.7200 (39.7200)
 
 CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/22 --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 14 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --eval-only
     'original&hidden_feature'     pixel_accuracy: 52.2200 (52.2200)  mean_accuracy: 26.7300 (26.7300)  mean_iou: 17.2800 (17.2800)
     'original_feature'            pixel_accuracy: 50.8700 (50.8700)  mean_accuracy: 29.0100 (29.0100)  mean_iou: 18.1400 (18.1400)
     'original_all_feature'        pixel_accuracy: 51.6200 (51.6200)  mean_accuracy: 27.1200 (27.1200)  mean_iou: 17.4800 (17.4800)
     'hidden_feature'              pixel_accuracy: 53.6900 (53.6900)  mean_accuracy: 17.9700 (17.9700)  mean_iou: 11.6700 (11.6700)
-    'original&hidden_feature'+lp 
-    'original_feature'+lp 
-    'original_all_feature'+lp 
-    'hidden_feature'+lp 
+    'original&hidden_feature'+lp  pixel_accuracy: 78.1100 (78.1100)  mean_accuracy: 52.9600 (52.9600)  mean_iou: 42.0400 (42.0400)
+    'original_feature'+lp         pixel_accuracy: 74.1800 (74.1800)  mean_accuracy: 50.6500 (50.6500)  mean_iou: 39.8700 (39.8700)
+    'original_all_feature'+lp     pixel_accuracy: 77.8800 (77.8800)  mean_accuracy: 52.6200 (52.6200)  mean_iou: 41.9800 (41.9800)
+    'hidden_feature'+lp           pixel_accuracy: 77.4500 (77.4500)  mean_accuracy: 51.1000 (51.1000)  mean_iou: 40.5500 (40.5500)
 
 
 CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/23 --dataset ade20k --no-resume --backbone vit_base_patch8_224 --batch-size 6 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --psi_num_blocks 2 --eval-only
+    'original&hidden_feature'     pixel_accuracy: 57.1900 (57.1900)  mean_accuracy: 26.9600 (26.9600)  mean_iou: 17.7900 (17.7900)
+```
+
+
+```
+dino exps
+
+CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/10 --dataset pascal_context --no-resume --backbone vit_small_patch16_224_dino --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
+    'original&hidden_feature'     pixel_accuracy: 51.8300 (51.8300)  mean_accuracy: 24.1300 (24.1300)  mean_iou: 16.9600 (16.9600)
+    'original_feature'            pixel_accuracy: 51.9900 (51.9900)  mean_accuracy: 24.4200 (24.4200)  mean_iou: 17.7800 (17.7800)
+    'original_all_feature'        pixel_accuracy: 52.1800 (52.1800)  mean_accuracy: 25.0100 (25.0100)  mean_iou: 18.2300 (18.2300)
+    'hidden_feature'              pixel_accuracy: 49.8300 (49.8300)  mean_accuracy: 23.5900 (23.5900)  mean_iou: 16.3500 (16.3500)
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
+
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/11 --dataset pascal_context --no-resume --backbone vit_base_patch16_224_dino --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature'
+    'original&hidden_feature'     pixel_accuracy: 55.4200 (55.4200)  mean_accuracy: 29.3700 (29.3700)  mean_iou: 22.2400 (22.2400)
+    'original_feature'            
+    'original_all_feature'        
+    'hidden_feature'              
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
+
+CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/12 --dataset pascal_context --no-resume --backbone vit_small_patch8_224_dino --batch-size 8 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
+    'original&hidden_feature'     
+    'original_feature'            
+    'original_all_feature'        
+    'hidden_feature'              
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
+
+CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/13 --dataset pascal_context --no-resume --backbone vit_base_patch8_224_dino --batch-size 7 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
+    'original&hidden_feature'     
+    'original_feature'            
+    'original_all_feature'        
+    'hidden_feature'              
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
+
+CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/14 --dataset ade20k --no-resume --backbone vit_small_patch16_224_dino --batch-size 16 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' 
+    'original&hidden_feature'     
+    'original_feature'            
+    'original_all_feature'        
+    'hidden_feature'              
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
+
+CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/15 --dataset ade20k --no-resume --backbone vit_base_patch16_224_dino --batch-size 16 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature'
+    'original&hidden_feature'     
+    'original_feature'            
+    'original_all_feature'        
+    'hidden_feature'              
+    'original&hidden_feature'+lp  
+    'original_feature'+lp         
+    'original_all_feature'+lp     
+    'hidden_feature'+lp           
 
 ```
 
@@ -105,13 +171,3 @@ CUDA_VISIBLE_DEVICES=3 python -m eval.miou logs/33/checkpoint_final.pth pascal_c
 CUDA_VISIBLE_DEVICES=4 python -m eval.miou logs/20/checkpoint_final.pth ade20k --singlescale
 CUDA_VISIBLE_DEVICES=5 python -m eval.miou logs/21/checkpoint_final.pth ade20k --singlescale
 ```
-
-
-CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/21-lp --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original&hidden_feature' --linear_probe_given logs/21/checkpoint.pth;CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/22-lp --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original&hidden_feature' --linear_probe_given logs/22/checkpoint.pth
-
-CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/21-lp --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_feature' --linear_probe_given yes;CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/22-lp --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_feature' --linear_probe_given yes
-
-CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/21-lp --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_all_feature' --linear_probe_given yes;CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/22-lp --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_all_feature' --linear_probe_given yes
-
-CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/21-lp --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'hidden_feature' --linear_probe_given logs/21/checkpoint.pth;CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/22-lp --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'hidden_feature' --linear_probe_given logs/22/checkpoint.pth
-

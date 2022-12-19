@@ -219,6 +219,7 @@ def main(
             psi=psi_cfg,
             kmeans=kmeans_cfg,
             neuralef=neuralef_loss_cfg,
+            backbone_trained_by_dino='dino' in backbone,
         ),
         amp=amp,
         log_dir=log_dir,

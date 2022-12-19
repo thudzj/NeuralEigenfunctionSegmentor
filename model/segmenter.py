@@ -16,6 +16,7 @@ class Segmenter(nn.Module):
         n_cls,
         kmeans_cfg,
         neuralef_loss_cfg,
+        backbone_trained_by_dino=False,
     ):
         super().__init__()
         self.n_cls = n_cls
@@ -26,12 +27,15 @@ class Segmenter(nn.Module):
         self.kmeans_cfg = kmeans_cfg
         self.kmeans_n_cls = kmeans_cfg['n_cls']
         self.neuralef_loss_cfg = neuralef_loss_cfg
+        self.backbone_trained_by_dino = backbone_trained_by_dino
   
         freeze_all_layers_(self.backbone)
 
         self.feat_out = {}
         self.backbone._modules["blocks"][0].register_forward_hook(self.hook_fn_forward_lowlevel)
         self.backbone._modules["blocks"][len(self.backbone._modules["blocks"]) // 2].register_forward_hook(self.hook_fn_forward_midlevel)
+        if backbone_trained_by_dino:
+            self.backbone._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(self.hook_fn_forward_highlevel)
 
         self.clustering_feature_dim = self.forward(torch.zeros(1, 3, 512, 512), return_features=True).shape[-1]
         self.online_head = nn.Linear(self.clustering_feature_dim, n_cls)
@@ -42,6 +46,10 @@ class Segmenter(nn.Module):
     
     def hook_fn_forward_midlevel(self, module, input, output):
         self.feat_out["midlevel_feature"] = output[:, 1 + self.backbone.distilled:, :]
+    
+    def hook_fn_forward_highlevel(self, module, input, output):
+        output_qkv = output.reshape(output.shape[0], output.shape[1], 3, self.backbone._modules["blocks"][-1]._modules["attn"].heads, -1).permute(2, 0, 3, 1, 4)
+        self.feat_out["highlevel_feature"] = output_qkv[1].transpose(1, 2).reshape(output.shape[0], output.shape[1], -1)[:, 1 + self.backbone.distilled:, :]
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -73,6 +81,8 @@ class Segmenter(nn.Module):
         H, W = im.size(2), im.size(3)
 
         highlevel_feature = self.backbone.forward(im, return_features=True)[:, 1 + self.backbone.distilled:, :]
+        if self.backbone_trained_by_dino:
+            highlevel_feature = self.feat_out["highlevel_feature"]
         lowlevel_feature = self.feat_out["lowlevel_feature"]
         midlevel_feature = self.feat_out["midlevel_feature"]
         return lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W
