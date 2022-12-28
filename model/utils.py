@@ -131,34 +131,50 @@ def merge_windows(windows, window_size, ori_shape):
     H, W = windows["shape"]
     flip = windows["flip"]
 
-    logit = torch.zeros((C, H, W), device=im_windows.device)
-    count = torch.zeros((1, H, W), device=im_windows.device)
-    for window, (ha, wa) in zip(im_windows, anchors):
-        logit[:, ha : ha + ws, wa : wa + ws] += window
-        count[:, ha : ha + ws, wa : wa + ws] += 1
-    logit = logit / count
-    logit = F.interpolate(
-        logit.unsqueeze(0),
-        ori_shape,
-        mode="bilinear",
-    )[0]
-    if flip:
-        logit = torch.flip(logit, (2,))
-    result = F.softmax(logit, 0)
+    try:
+        logit = torch.zeros((C, H, W), device=im_windows.device)
+        count = torch.zeros((1, H, W), device=im_windows.device)
+        for window, (ha, wa) in zip(im_windows, anchors):
+            logit[:, ha : ha + ws, wa : wa + ws] += window
+            count[:, ha : ha + ws, wa : wa + ws] += 1
+        logit = logit / count
+        logit = F.interpolate(
+            logit.unsqueeze(0),
+            ori_shape,
+            mode="bilinear",
+        )[0]
+        if flip:
+            logit = torch.flip(logit, (2,))
+        result = F.softmax(logit, 0)
+    except:
+        logit = torch.zeros((C, H, W))
+        count = torch.zeros((1, H, W))
+        for window, (ha, wa) in zip(im_windows, anchors):
+            logit[:, ha : ha + ws, wa : wa + ws] += window.to(logit.device)
+            count[:, ha : ha + ws, wa : wa + ws] += 1
+        logit = logit / count
+        logit = F.interpolate(
+            logit.unsqueeze(0),
+            ori_shape,
+            mode="bilinear",
+        )[0]
+        if flip:
+            logit = torch.flip(logit, (2,))
+        result = F.softmax(logit, 0).to(im_windows.device)
     return result
 
 
 def inference(
-    is_linear_probe,
     model,
     ims,
     ims_metas,
     ori_shape,
     window_size,
     window_stride,
+    C,
+    # tau_min,
     batch_size,
 ):
-    C = model.n_cls if is_linear_probe else model.kmeans_n_cls
     model.eval()
     seg_map = torch.zeros((C, ori_shape[0], ori_shape[1]), device=ptu.device)
     for im, im_metas in zip(ims, ims_metas):
@@ -173,7 +189,7 @@ def inference(
         with torch.no_grad():
             for i in range(0, B, WB):
                 seg_maps[i : i + WB] = model.forward(crops[i : i + WB])
-        windows["seg_maps"] = seg_maps
+        windows["seg_maps"] = seg_maps # / tau_min
         im_seg_map = merge_windows(windows, window_size, ori_shape)
         seg_map += im_seg_map
     seg_map /= len(ims)

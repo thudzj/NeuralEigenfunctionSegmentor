@@ -56,7 +56,7 @@ def create_segmenter(model_cfg):
     model_cfg = model_cfg.copy()
     backbone = create_backbone(model_cfg['backbone'])
     psi = create_psi(backbone, model_cfg['psi'])
-    model = Segmenter(backbone, psi, n_cls=model_cfg["n_cls"], kmeans_cfg=model_cfg['kmeans'], 
+    model = Segmenter(backbone, psi, n_cls=model_cfg["n_cls"], 
         neuralef_loss_cfg=model_cfg['neuralef'], backbone_trained_by_dino=model_cfg['backbone_trained_by_dino'])
     return model
 

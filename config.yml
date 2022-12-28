@@ -149,18 +149,18 @@ psi:
   mlp_dim: 576
   num_heads: 18
   head_dim: 64
-kmeans:
-  n_cls: 150
-  momentum: auto
-  feature: temp
-  tradeoff: 1
-  dim: 0
-  tau: 1
+# kmeans:
+#   n_cls: 150
+#   momentum: auto
+#   feature: temp
+#   tradeoff: 1
+#   dim: 0
+#   tau: 1
 neuralef:
   t: 1
   alpha: 0.02
   no_sg: false
-  pixelwise_adj_div_factor: 1
+  # pixelwise_adj_div_factor: 1
   num_nearestn_feature: 32
   num_nearestn_pixel1: 10
   num_nearestn_pixel2: 5

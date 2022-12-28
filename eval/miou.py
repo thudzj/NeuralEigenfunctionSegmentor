@@ -101,7 +101,7 @@ def eval_dataset(
     im_size = dataset_kwargs["image_size"]
     cat_names = db.base_dataset.names
     n_cls = db.unwrapped.n_cls
-    kmeans_n_cls = model.kmeans_n_cls
+    n_cls_train = model.psi.psi_dim
     if multiscale:
         db.dataset.set_multiscale_mode()
 
@@ -164,7 +164,7 @@ def eval_dataset(
         seg_pred_maps = gather_data(seg_pred_maps)
 
     # find the mapping from ground-truth labels to clustering assignments
-    maps = optimal_map(seg_gt_maps, seg_pred_maps, kmeans_n_cls, n_cls, IGNORE_LABEL)
+    maps = optimal_map(seg_gt_maps, seg_pred_maps, n_cls_train, n_cls, IGNORE_LABEL)
     # rotate the clustering assignments
     keys = seg_pred_maps.keys()
     for k in keys:

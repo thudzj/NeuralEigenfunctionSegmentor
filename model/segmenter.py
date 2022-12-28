@@ -14,7 +14,6 @@ class Segmenter(nn.Module):
         backbone,
         psi,
         n_cls,
-        kmeans_cfg,
         neuralef_loss_cfg,
         backbone_trained_by_dino=False,
     ):
@@ -24,8 +23,6 @@ class Segmenter(nn.Module):
         self.backbone = backbone
         self.psi = psi
 
-        self.kmeans_cfg = kmeans_cfg
-        self.kmeans_n_cls = kmeans_cfg['n_cls']
         self.neuralef_loss_cfg = neuralef_loss_cfg
         self.backbone_trained_by_dino = backbone_trained_by_dino
   
@@ -37,9 +34,9 @@ class Segmenter(nn.Module):
         if backbone_trained_by_dino:
             self.backbone._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(self.hook_fn_forward_highlevel)
 
-        self.clustering_feature_dim = self.forward(torch.zeros(1, 3, 512, 512), return_features=True).shape[-1]
-        self.online_head = nn.Linear(self.clustering_feature_dim, n_cls)
-        # self.online_head2 = nn.Linear(self.backbone.d_model, n_cls)
+        self.online_head = nn.Linear(self.psi.hidden_dim, n_cls)
+
+        self.mode = 'our'
 
     def hook_fn_forward_lowlevel(self, module, input, output):
         self.feat_out["lowlevel_feature"] = output[:, 1 + self.backbone.distilled:, :]
@@ -60,7 +57,7 @@ class Segmenter(nn.Module):
             append_prefix_no_weight_decay("psi.", self.psi)
         )
         return nwd_params
-
+    
     @torch.no_grad()
     def clustering(self, feature, update=False):
         feature1 = feature.reshape(-1, feature.shape[-1])
@@ -69,12 +66,12 @@ class Segmenter(nn.Module):
         logits = -logits
         if update:
             assignments = logits.argmax(dim=1)
-            onehot_assignments = F.one_hot(assignments, self.kmeans_n_cls)
+            onehot_assignments = F.one_hot(assignments, self.psi.psi_dim)
             self.cluster_centers.mul_(self.num_per_cluster.view(-1, 1)).add_(onehot_assignments.float().T @ feature1)
             self.num_per_cluster.add_(onehot_assignments.long().sum(0))
             self.cluster_centers.div_(self.num_per_cluster.view(-1, 1))
-        return logits.view(*feature.shape[:-1], -1).div_(self.kmeans_cfg['tau']) #onehot_assignments.float().view(*feature.shape[:-1], -1) #
-    
+        return logits.view(*feature.shape[:-1], -1)
+
     def forward_features(self, im):
         H_ori, W_ori = im.size(2), im.size(3)
         im = padding(im, self.patch_size)
@@ -87,71 +84,41 @@ class Segmenter(nn.Module):
         midlevel_feature = self.feat_out["midlevel_feature"]
         return lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W
 
-    def forward(self, im, return_neuralef_loss=False, return_features=False):
-        bs = im.shape[0]
-
+    def forward(self, im, tau=None, return_neuralef_loss=False, return_features=False):
         with torch.no_grad():
             lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W = self.forward_features(im)
             h = H // self.patch_size
             
-        hidden, Psi = self.psi(torch.cat([lowlevel_feature, midlevel_feature, highlevel_feature], dim=-1))
-
-        with torch.no_grad():
-            if self.kmeans_cfg['feature'] == 'original_feature':
-                clustering_feature = highlevel_feature
-            elif self.kmeans_cfg['feature'] == 'original_all_feature':
-                clustering_feature = torch.cat([lowlevel_feature, midlevel_feature, highlevel_feature], -1)
-            elif self.kmeans_cfg['feature'] == 'normalized_original_all_feature':
-                clustering_feature = torch.cat([F.normalize(lowlevel_feature, dim=-1), F.normalize(midlevel_feature, dim=-1), F.normalize(highlevel_feature, dim=-1)], -1)
-            elif self.kmeans_cfg['feature'] == 'hidden_feature':
-                clustering_feature = hidden.clone().detach()
-            elif self.kmeans_cfg['feature'] == 'eigen_feature':
-                clustering_feature = Psi.clone().detach()
-            elif self.kmeans_cfg['feature'] == 'original&hidden_feature':
-                clustering_feature = torch.cat([hidden.clone().detach(), highlevel_feature], -1)
-            elif self.kmeans_cfg['feature'] == 'original&eigen_feature':
-                if Psi.shape[1] == highlevel_feature.shape[1]:
-                    clustering_feature = torch.cat([Psi.clone().detach(), highlevel_feature], -1)
-                else:
-                    clustering_feature = highlevel_feature
-            elif self.kmeans_cfg['feature'] == 'normalized_original_feature':
-                clustering_feature = F.normalize(highlevel_feature, dim=-1)
-            elif self.kmeans_cfg['feature'] == 'normalized_hidden_feature':
-                clustering_feature = F.normalize(hidden.clone().detach(), dim=-1)
-            elif self.kmeans_cfg['feature'] == 'normalized_original&hidden_feature':
-                clustering_feature = torch.cat([F.normalize(hidden.clone().detach(), dim=-1) * math.sqrt(hidden.shape[-1]), 
-                                                F.normalize(highlevel_feature, dim=-1) * math.sqrt(highlevel_feature.shape[-1])], -1)
-            elif self.kmeans_cfg['feature'] == 'normalized_original&eigen_feature':
-                if Psi.shape[1] == highlevel_feature.shape[1]:
-                    clustering_feature = torch.cat([F.normalize(Psi.clone().detach(), dim=-1), F.normalize(highlevel_feature, dim=-1)], -1)
-                else:
-                    clustering_feature = highlevel_feature
-            else:
-                assert False, self.kmeans_cfg['feature']
-            
-            clustering_feature = rearrange(clustering_feature, "b (h w) c -> b h w c", h=h)
-            if not self.training and hasattr(self, 'proj_matrix'):
-                clustering_feature = clustering_feature.sub(self.feature_mean) @ self.proj_matrix
+        hidden, Psi = self.psi(torch.cat([lowlevel_feature, midlevel_feature, highlevel_feature], dim=-1), tau)
 
         if return_features:
-            return clustering_feature #F.normalize(clustering_feature, dim=-1)
+            if self.mode == 'our_kmeans':
+                return hidden
+            elif self.mode == 'kmeans':
+                return highlevel_feature
+            else:
+                assert 0
 
-        if not self.training and hasattr(self, 'cluster_centers'):
-            masks = self.clustering(clustering_feature).permute(0, 3, 1, 2) #F.normalize(clustering_feature, dim=-1)
+        if self.training:
+            masks = self.online_head(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
         else:
-            masks = self.online_head(clustering_feature).permute(0, 3, 1, 2)
+            if self.mode == 'our':
+                masks = rearrange(Psi, "b (h w) c -> b h w c", h=h).permute(0, 3, 1, 2).div(self.tau_min)
+            elif self.mode == 'our_kmeans':
+                masks = self.clustering(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+            elif self.mode == 'kmeans':
+                masks = self.clustering(rearrange(highlevel_feature, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+            elif self.mode == 'linear_probe':
+                masks = self.online_head(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+            else:
+                assert 0
+
         upsample_bs = 16 if self.training else 2
         masks = torch.cat([F.interpolate(masks[i*upsample_bs:min((i+1)*upsample_bs, len(masks))], size=(H, W), mode="bilinear")
             for i in range(int(math.ceil(float(len(masks))/upsample_bs)))])
         masks = unpadding(masks, (H_ori, W_ori))
 
         if return_neuralef_loss:
-            # masks2 = self.online_head2(highlevel_feature).view(*clustering_feature.shape[:-1], -1).permute(0, 3, 1, 2)
-            # upsample_bs = 16 if self.training else 2
-            # masks2 = torch.cat([F.interpolate(masks2[i*upsample_bs:min((i+1)*upsample_bs, len(masks2))], size=(H, W), mode="bilinear")
-            #     for i in range(int(math.ceil(float(len(masks2))/upsample_bs)))])
-            # masks2 = unpadding(masks2, (H_ori, W_ori))
-
             with torch.no_grad():
                 im_ = F.interpolate(im, size=(H // self.patch_size, W // self.patch_size), mode="bilinear")
             neuralef_loss, neuralef_reg = cal_neuralef_loss(highlevel_feature, Psi, im_, self.neuralef_loss_cfg)
@@ -162,7 +129,7 @@ class Segmenter(nn.Module):
 def cal_neuralef_loss(highlevel_feature, Psi, im, neuralef_loss_cfg):
     if Psi.dim() == 3:
         Psi = Psi.flatten(0, 1)
-    Psi *= math.sqrt(neuralef_loss_cfg['t'] / Psi.shape[0])
+    Psi *= math.sqrt(neuralef_loss_cfg['t'])
     with torch.no_grad():
         with torch.cuda.amp.autocast():
             highlevel_feature_ = F.normalize(highlevel_feature.flatten(0, 1), dim=-1)
@@ -172,8 +139,7 @@ def cal_neuralef_loss(highlevel_feature, Psi, im, neuralef_loss_cfg):
             ret = torch.topk(A, neuralef_loss_cfg['num_nearestn_feature'], dim=-1)
             res = torch.zeros(*A.shape, device=A.device, dtype=A.dtype)
             res.scatter_(-1, ret.indices, ret.values)
-            res.add_(res.T).div_(2.)
-            A = res 
+            A = (res + res.T).div_(2.) 
 
             im = im.add_(1.).div_(2.)
             bs, h, w = im.shape[0], im.shape[2], im.shape[3]
@@ -204,14 +170,13 @@ def cal_neuralef_loss(highlevel_feature, Psi, im, neuralef_loss_cfg):
             D2 = A2.sum(-1).rsqrt()
             gram_matrix2 = A2.mul_(D2.view(1, -1)).mul_(D2.view(-1, 1)).type_as(Psi)
 
-    Psi1, Psi2 = Psi.chunk(2, dim=-1)
-    loss, reg = 0, 0
-    for Psi_, gram_matrix_, weight_ in zip([Psi1, Psi2], [gram_matrix, gram_matrix2], [1, neuralef_loss_cfg['pixelwise_weight']]):
-        R = Psi_.T @ gram_matrix_ @ Psi_
-        if neuralef_loss_cfg['no_sg']:
-            R_hat = R
-        else:
-            R_hat = Psi_.T.detach() @ gram_matrix_ @ Psi_
-        loss += - R.diagonal().sum() / Psi.shape[1] * weight_
-        reg += (R_hat ** 2).triu(1).sum() / Psi.shape[1] * weight_
+            gram_matrix += gram_matrix2 * neuralef_loss_cfg['pixelwise_weight']
+    
+    R = Psi.T @ gram_matrix @ Psi
+    if neuralef_loss_cfg['no_sg']:
+        R_hat = R
+    else:
+        R_hat = Psi.T.detach() @ gram_matrix @ Psi
+    loss = - R.diagonal().sum() / Psi.shape[1]
+    reg = (R_hat ** 2).triu(1).sum() / Psi.shape[1]
     return loss, reg * neuralef_loss_cfg['alpha']

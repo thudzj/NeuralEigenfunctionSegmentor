@@ -12,162 +12,76 @@ python -m scripts.prepare_ade20k $DATASET
 
 then train our model
 ```
-CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/30 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'    pixel_accuracy: 64.6800 (64.6800)  mean_accuracy: 48.5500 (48.5500)  mean_iou: 37.1200 (37.1200)
-    'original_feature'           pixel_accuracy: 62.7800 (62.7800)  mean_accuracy: 47.4300 (47.4300)  mean_iou: 35.7900 (35.7900)
-    'original_all_feature'       pixel_accuracy: 63.0600 (63.0600)  mean_accuracy: 46.4700 (46.4700)  mean_iou: 34.9000 (34.9000)
-    'hidden_feature'             pixel_accuracy: 61.3700 (61.3700)  mean_accuracy: 42.1700 (42.1700)  mean_iou: 32.1200 (32.1200)
-    CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/30-lp --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 64 --epochs 40 -lr .001 --kmeans_feature 'original&hidden_feature' --linear_probe_given logs/30/checkpoint.pth
-                                 pixel_accuracy: 75.5300 (75.5300)  mean_accuracy: 59.8700 (59.8700)  mean_iou: 49.7100 (49.7100)
-    CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/30-lp --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 64 --epochs 40 -lr .001 --kmeans_feature 'original_feature' --linear_probe_given yes
-                                 pixel_accuracy: 73.1000 (73.1000)  mean_accuracy: 58.3400 (58.3400)  mean_iou: 47.7000 (47.7000)
-    CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/30-lp --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 64 --epochs 40 -lr .001 --kmeans_feature 'original_all_feature' --linear_probe_given yes
-                                 pixel_accuracy: 75.0800 (75.0800)  mean_accuracy: 59.1800 (59.1800)  mean_iou: 49.2600 (49.2600)
-    CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/30-lp --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 64 --epochs 40 -lr .001 --kmeans_feature 'hidden_feature' --linear_probe_given logs/30/checkpoint.pth
-                                 pixel_accuracy: 74.8700 (74.8700)  mean_accuracy: 56.4300 (56.4300)  mean_iou: 46.7800 (46.7800)
+CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/40 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    our: pixel_accuracy: 73.1700 (73.1700)  mean_accuracy: 64.5200 (64.5200)  mean_iou: 45.2600 (45.2600)
+    our_kmeans: pixel_accuracy: 75.4100 (75.4100)  mean_accuracy: 60.3400 (60.3400)  mean_iou: 44.6300 (44.6300)
+    kmeans: pixel_accuracy: 61.9900 (61.9900)  mean_accuracy: 54.9000 (54.9000)  mean_iou: 36.7900 (36.7900)
 
+    reco:
+        our: mIoU (bi) 0.367 (0.371) | Pixel acc (bi) 0.688 (0.689)
+        our_kmeans: mIoU (bi) 0.395 (0.395) | Pixel acc (bi) 0.744 (0.744)
+        kmeans: mIoU (bi) 0.289 (0.289) | Pixel acc (bi) 0.618 (0.619)
 
-CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/31 --dataset pascal_context --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'    pixel_accuracy: 60.2600 (60.2600)  mean_accuracy: 46.6300 (46.6300)  mean_iou: 34.2300 (34.2300)
-    'original_feature'           pixel_accuracy: 59.9300 (59.9300)  mean_accuracy: 46.0400 (46.0400)  mean_iou: 33.7400 (33.7400)
-    'original_all_feature'       pixel_accuracy: 59.1900 (59.1900)  mean_accuracy: 42.6600 (42.6600)  mean_iou: 31.1800 (31.1800)
-    'hidden_feature'             pixel_accuracy: 58.6600 (58.6600)  mean_accuracy: 41.6200 (41.6200)  mean_iou: 32.1800 (32.1800)
-    'original&hidden_feature'+lp pixel_accuracy: 76.4600 (76.4600)  mean_accuracy: 61.6900 (61.6900)  mean_iou: 51.5600 (51.5600)
-    'original_feature'+lp        pixel_accuracy: 74.5900 (74.5900)  mean_accuracy: 60.9200 (60.9200)  mean_iou: 50.2100 (50.2100)
-    'original_all_feature'+lp    pixel_accuracy: 76.3600 (76.3600)  mean_accuracy: 61.1900 (61.1900)  mean_iou: 51.4000 (51.4000)
-    'hidden_feature'+lp          pixel_accuracy: 76.2400 (76.2400)  mean_accuracy: 59.3600 (59.3600)  mean_iou: 49.7000 (49.7000)
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/41 --dataset pascal_context --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 70.6500 (70.6500)  mean_accuracy: 64.6100 (64.6100)  mean_iou: 43.6900 (43.6900)
+    our_kmeans: pixel_accuracy: 74.2900 (74.2900)  mean_accuracy: 59.3400 (59.3400)  mean_iou: 42.9300 (42.9300)
+    kmeans: pixel_accuracy: 57.8200 (57.8200)  mean_accuracy: 52.7400 (52.7400)  mean_iou: 33.0200 (33.0200)
 
-CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/32 --dataset pascal_context --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'    pixel_accuracy: 48.8400 (48.8400)  mean_accuracy: 35.4300 (35.4300)  mean_iou: 25.0900 (25.0900)
-    'original_feature'           pixel_accuracy: 48.4400 (48.4400)  mean_accuracy: 37.1400 (37.1400)  mean_iou: 24.7300 (24.7300)
-    'original_all_feature'       pixel_accuracy: 47.3500 (47.3500)  mean_accuracy: 34.1600 (34.1600)  mean_iou: 23.5000 (23.5000)
-    'hidden_feature'             pixel_accuracy: 49.2000 (49.2000)  mean_accuracy: 36.3600 (36.3600)  mean_iou: 27.0200 (27.0200)
-    'original&hidden_feature'+lp pixel_accuracy: 75.1800 (75.1800)  mean_accuracy: 60.6800 (60.6800)  mean_iou: 50.5900 (50.5900)
-    'original_feature'+lp        pixel_accuracy: 71.4600 (71.4600)  mean_accuracy: 57.8500 (57.8500)  mean_iou: 47.4200 (47.4200)
-    'original_all_feature'+lp    pixel_accuracy: 75.1500 (75.1500)  mean_accuracy: 59.6700 (59.6700)  mean_iou: 50.3900 (50.3900)
-    'hidden_feature'+lp          pixel_accuracy: 74.8100 (74.8100)  mean_accuracy: 59.1000 (59.1000)  mean_iou: 48.8900 (48.8900)
+CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/42 --dataset pascal_context --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 65.8200 (65.8200)  mean_accuracy: 62.1900 (62.1900)  mean_iou: 40.3500 (40.3500)
+    our_kmeans: pixel_accuracy: 74.2500 (74.2500)  mean_accuracy: 54.2000 (54.2000)  mean_iou: 40.9500 (40.9500)
+    kmeans: pixel_accuracy: 44.4600 (44.4600)  mean_accuracy: 43.3700 (43.3700)  mean_iou: 23.5200 (23.5200)
 
-CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/33 --dataset pascal_context --no-resume --backbone vit_base_patch8_224 --batch-size 6 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'    pixel_accuracy: 54.5500 (54.5500)  mean_accuracy: 37.2000 (37.2000)  mean_iou: 26.3600 (26.3600)
-    'original_feature'           pixel_accuracy: 54.7000 (54.7000)  mean_accuracy: 37.7700 (37.7700)  mean_iou: 26.2100 (26.2100)
-    'original_all_feature'       pixel_accuracy: 54.3700 (54.3700)  mean_accuracy: 37.7300 (37.7300)  mean_iou: 26.9700 (26.9700)
-    'hidden_feature'             pixel_accuracy: 43.6100 (43.6100)  mean_accuracy: 20.0600 (20.0600)  mean_iou: 14.6000 (14.6000)
-    'original&hidden_feature'+lp pixel_accuracy: 75.0700 (75.0700)  mean_accuracy: 59.5500 (59.5500)  mean_iou: 49.3700 (49.3700)
-    'original_feature'+lp        pixel_accuracy: 71.8100 (71.8100)  mean_accuracy: 57.3200 (57.3200)  mean_iou: 46.5700 (46.5700)
-    'original_all_feature'+lp    pixel_accuracy: 74.6600 (74.6600)  mean_accuracy: 59.1000 (59.1000)  mean_iou: 49.1200 (49.1200)
-    'hidden_feature'+lp          pixel_accuracy: 75.6200 (75.6200)  mean_accuracy: 58.8500 (58.8500)  mean_iou: 49.0200 (49.0200)
+CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/43 --dataset pascal_context --no-resume --backbone vit_base_patch8_224 --batch-size 6 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 73.8400 (73.8400)  mean_accuracy: 56.6200 (56.6200)  mean_iou: 42.6400 (42.6400)
 
-CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/20 --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'     pixel_accuracy: 62.7800 (62.7800)  mean_accuracy: 25.6500 (25.6500)  mean_iou: 17.1200 (17.1200)
-    'original_feature'            pixel_accuracy: 61.6800 (61.6800)  mean_accuracy: 26.6200 (26.6200)  mean_iou: 17.7300 (17.7300)
-    'original_all_feature'        pixel_accuracy: 62.7000 (62.7000)  mean_accuracy: 27.7500 (27.7500)  mean_iou: 18.6200 (18.6200)
-    'hidden_feature'              pixel_accuracy: 62.7300 (62.7300)  mean_accuracy: 17.0600 (17.0600)  mean_iou: 11.1400 (11.1400)
-    CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/20-lp --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original&hidden_feature' --linear_probe_given logs/20/checkpoint.pth
-                                  pixel_accuracy: 76.7900 (76.7900)  mean_accuracy: 49.1600 (49.1600)  mean_iou: 38.1800 (38.1800)
-    CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/20-lp --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_feature' --linear_probe_given yes
-                                  pixel_accuracy: 74.2200 (74.2200)  mean_accuracy: 47.3100 (47.3100)  mean_iou: 36.4100 (36.4100)
-    CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/20-lp --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'original_all_feature' --linear_probe_given yes
-                                  pixel_accuracy: 76.6100 (76.6100)  mean_accuracy: 49.6500 (49.6500)  mean_iou: 38.4900 (38.4900)
-    CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/20-lp --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --kmeans_feature 'hidden_feature' --linear_probe_given logs/20/checkpoint.pth
-                                  pixel_accuracy: 75.3500 (75.3500)  mean_accuracy: 42.2300 (42.2300)  mean_iou: 32.4600 (32.4600)
+--------------------
 
-CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/21 --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 14 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'     pixel_accuracy: 61.9400 (61.9400)  mean_accuracy: 31.7500 (31.7500)  mean_iou: 20.8200 (20.8200)
-    'original_feature'            pixel_accuracy: 61.4100 (61.4100)  mean_accuracy: 32.0300 (32.0300)  mean_iou: 21.0500 (21.0500)
-    'original_all_feature'        pixel_accuracy: 61.0500 (61.0500)  mean_accuracy: 31.6400 (31.6400)  mean_iou: 20.4300 (20.4300)
-    'hidden_feature'              pixel_accuracy: 61.7600 (61.7600)  mean_accuracy: 17.4200 (17.4200)  mean_iou: 12.3500 (12.3500)
-    'original&hidden_feature'+lp  pixel_accuracy: 78.5600 (78.5600)  mean_accuracy: 53.7600 (53.7600)  mean_iou: 42.1200 (42.1200)
-    'original_feature'+lp         pixel_accuracy: 76.3900 (76.3900)  mean_accuracy: 52.1600 (52.1600)  mean_iou: 40.7700 (40.7700)
-    'original_all_feature'+lp     pixel_accuracy: 78.3500 (78.3500)  mean_accuracy: 53.1500 (53.1500)  mean_iou: 42.1400 (42.1400)
-    'hidden_feature'+lp           pixel_accuracy: 77.9000 (77.9000)  mean_accuracy: 50.0300 (50.0300)  mean_iou: 39.7200 (39.7200)
+CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/44 --dataset ade20k --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 20 -lr .001 --psi_k 512 --alpha 0.04 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 63.2800 (63.2800)  mean_accuracy: 39.0100 (39.0100)  mean_iou: 21.5700 (21.5700)
+    our_kmeans: pixel_accuracy: 62.4900 (62.4900)  mean_accuracy: 47.1600 (47.1600)  mean_iou: 23.5800 (23.5800)
+    kmeans: pixel_accuracy: 50.7000 (50.7000)  mean_accuracy: 41.3700 (41.3700)  mean_iou: 19.2200 (19.2200)
 
-CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/22 --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 14 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --eval-only
-    'original&hidden_feature'     pixel_accuracy: 52.2200 (52.2200)  mean_accuracy: 26.7300 (26.7300)  mean_iou: 17.2800 (17.2800)
-    'original_feature'            pixel_accuracy: 50.8700 (50.8700)  mean_accuracy: 29.0100 (29.0100)  mean_iou: 18.1400 (18.1400)
-    'original_all_feature'        pixel_accuracy: 51.6200 (51.6200)  mean_accuracy: 27.1200 (27.1200)  mean_iou: 17.4800 (17.4800)
-    'hidden_feature'              pixel_accuracy: 53.6900 (53.6900)  mean_accuracy: 17.9700 (17.9700)  mean_iou: 11.6700 (11.6700)
-    'original&hidden_feature'+lp  pixel_accuracy: 78.1100 (78.1100)  mean_accuracy: 52.9600 (52.9600)  mean_iou: 42.0400 (42.0400)
-    'original_feature'+lp         pixel_accuracy: 74.1800 (74.1800)  mean_accuracy: 50.6500 (50.6500)  mean_iou: 39.8700 (39.8700)
-    'original_all_feature'+lp     pixel_accuracy: 77.8800 (77.8800)  mean_accuracy: 52.6200 (52.6200)  mean_iou: 41.9800 (41.9800)
-    'hidden_feature'+lp           pixel_accuracy: 77.4500 (77.4500)  mean_accuracy: 51.1000 (51.1000)  mean_iou: 40.5500 (40.5500)
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/45 --dataset ade20k --no-resume --backbone vit_base_patch16_384 --batch-size 16 --epochs 20 -lr .001 --psi_k 512 --alpha 0.04 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 61.0000 (61.0000)  mean_accuracy: 45.9800 (45.9800)  mean_iou: 25.0000 (25.0000)
+    our_kmeans: pixel_accuracy: 62.2000 (62.2000)  mean_accuracy: 45.9100 (45.9100)  mean_iou: 23.3600 (23.3600)
+    kmeans: pixel_accuracy: 48.6000 (48.6000)  mean_accuracy: 45.9900 (45.9900)  mean_iou: 19.6000 (19.6000)  
 
+CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/46 --dataset ade20k --no-resume --backbone vit_large_patch16_384 --batch-size 16 --epochs 20 -lr .001 --psi_k 512 --alpha 0.04 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2 --eval-only --mode our_kmeans
+    pixel_accuracy: 59.0300 (59.0300)  mean_accuracy: 44.7000 (44.7000)  mean_iou: 25.2500 (25.2500) 
+    our_kmeans: pixel_accuracy: 61.1400 (61.1400)  mean_accuracy: 42.9000 (42.9000)  mean_iou: 22.5800 (22.5800)
+    kmeans: pixel_accuracy: 38.3500 (38.3500)  mean_accuracy: 42.8100 (42.8100)  mean_iou: 17.8400 (17.8400)
 
-CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/23 --dataset ade20k --no-resume --backbone vit_base_patch8_224 --batch-size 6 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' --psi_num_blocks 2 --eval-only
-    'original&hidden_feature'     pixel_accuracy: 57.1900 (57.1900)  mean_accuracy: 26.9600 (26.9600)  mean_iou: 17.7900 (17.7900)
-```
+CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/47 --dataset ade20k --no-resume --backbone vit_base_patch8_224 --batch-size 6 --epochs 20 -lr .001 --psi_k 512 --alpha 0.04 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 66.4500 (66.4500)  mean_accuracy: 24.9300 (24.9300)  mean_iou: 17.4800 (17.4800)
+    our_kmeans: pixel_accuracy: 62.0500 (62.0500)  mean_accuracy: 45.0000 (45.0000)  mean_iou: 22.5200 (22.5200)
 
+--------------------
+CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/50 --dataset cityscapes --no-resume --backbone vit_small_patch16_384 --batch-size 8 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    disable-crf:
+        pixel_accuracy: 85.4800 (85.4800)  mean_accuracy: 66.7700 (66.7700)  mean_iou: 45.8800 (45.8800)
+        our_kmeans: pixel_accuracy: 87.6100 (87.6100)  mean_accuracy: 73.5000 (73.5000)  mean_iou: 50.0200 (50.0200)
+        kmeans: pixel_accuracy: 76.3200 (76.3200)  mean_accuracy: 56.8000 (56.8000)  mean_iou: 34.4500 (34.4500)
+    
+    pixel_accuracy: 86.0500 (86.0500)  mean_accuracy: 67.5700 (67.5700)  mean_iou: 46.6500 (46.6500)
+    our_kmeans: pixel_accuracy: 88.2500 (88.2500)  mean_accuracy: 73.7300 (73.7300)  mean_iou: 52.7800 (52.7800)
+    kmeans: pixel_accuracy: 75.4800 (75.4800)  mean_accuracy: 57.1000 (57.1000)  mean_iou: 34.2000 (34.2000)
 
-```
-dino exps
+    reco:
+        mIoU (bi) 0.281 (0.282) | Pixel acc (bi) 0.833 (0.834)
+        our_kmeans: mIoU (bi) 0.300 (0.300) | Pixel acc (bi) 0.846 (0.846)
+        kmeans: mIoU (bi) 0.223 (0.224) | Pixel acc (bi) 0.770 (0.770)
 
-CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/10 --dataset pascal_context --no-resume --backbone vit_small_patch16_224_dino --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
-    'original&hidden_feature'     pixel_accuracy: 51.8300 (51.8300)  mean_accuracy: 24.1300 (24.1300)  mean_iou: 16.9600 (16.9600)
-    'original_feature'            pixel_accuracy: 51.9900 (51.9900)  mean_accuracy: 24.4200 (24.4200)  mean_iou: 17.7800 (17.7800)
-    'original_all_feature'        pixel_accuracy: 52.1800 (52.1800)  mean_accuracy: 25.0100 (25.0100)  mean_iou: 18.2300 (18.2300)
-    'hidden_feature'              pixel_accuracy: 49.8300 (49.8300)  mean_accuracy: 23.5900 (23.5900)  mean_iou: 16.3500 (16.3500)
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/51 --dataset cityscapes --no-resume --backbone vit_base_patch16_384 --batch-size 8 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 84.7800 (84.7800)  mean_accuracy: 65.1200 (65.1200)  mean_iou: 44.1200 (44.1200)
+    our_kmeans: pixel_accuracy: 87.9400 (87.9400)  mean_accuracy: 70.7200 (70.7200)  mean_iou: 49.5400 (49.5400)
+    kmeans: pixel_accuracy: 72.7000 (72.7000)  mean_accuracy: 60.5600 (60.5600)  mean_iou: 34.9300 (34.9300)
 
-CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/11 --dataset pascal_context --no-resume --backbone vit_base_patch16_224_dino --batch-size 16 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature'
-    'original&hidden_feature'     pixel_accuracy: 55.4200 (55.4200)  mean_accuracy: 29.3700 (29.3700)  mean_iou: 22.2400 (22.2400)
-    'original_feature'            
-    'original_all_feature'        
-    'hidden_feature'              
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
+CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/52 --dataset cityscapes --no-resume --backbone vit_large_patch16_384 --batch-size 8 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
+    pixel_accuracy: 84.1300 (84.1300)  mean_accuracy: 65.4500 (65.4500)  mean_iou: 43.8000 (43.8000)
+    our_kmeans: pixel_accuracy: 87.8200 (87.8200)  mean_accuracy: 68.9800 (68.9800)  mean_iou: 50.1700 (50.1700)
+    kmeans:  pixel_accuracy: 62.2500 (62.2500)  mean_accuracy: 56.3800 (56.3800)  mean_iou: 31.6500 (31.6500)
 
-CUDA_VISIBLE_DEVICES=2 python train.py --log-dir logs/12 --dataset pascal_context --no-resume --backbone vit_small_patch8_224_dino --batch-size 8 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
-    'original&hidden_feature'     
-    'original_feature'            
-    'original_all_feature'        
-    'hidden_feature'              
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir logs/53 --dataset cityscapes --no-resume --backbone vit_base_patch8_224 --batch-size 1 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --tau_max 1 --tau_min 0.3 --num_nearestn_feature 256 --pixelwise_weight 0.3 --num_nearestn_pixel1 10 --num_nearestn_pixel2 5 --t 0.01 --psi_num_blocks 2
 
-CUDA_VISIBLE_DEVICES=3 python train.py --log-dir logs/13 --dataset pascal_context --no-resume --backbone vit_base_patch8_224_dino --batch-size 7 --epochs 40 -lr .001 --kmeans_n_cls 512 --kmeans_feature 'original&hidden_feature' 
-    'original&hidden_feature'     
-    'original_feature'            
-    'original_all_feature'        
-    'hidden_feature'              
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
-
-CUDA_VISIBLE_DEVICES=4 python train.py --log-dir logs/14 --dataset ade20k --no-resume --backbone vit_small_patch16_224_dino --batch-size 16 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature' 
-    'original&hidden_feature'     
-    'original_feature'            
-    'original_all_feature'        
-    'hidden_feature'              
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
-
-CUDA_VISIBLE_DEVICES=5 python train.py --log-dir logs/15 --dataset ade20k --no-resume --backbone vit_base_patch16_224_dino --batch-size 16 --epochs 20 -lr .001 --kmeans_n_cls 600 --kmeans_feature 'original&hidden_feature'
-    'original&hidden_feature'     
-    'original_feature'            
-    'original_all_feature'        
-    'hidden_feature'              
-    'original&hidden_feature'+lp  
-    'original_feature'+lp         
-    'original_all_feature'+lp     
-    'hidden_feature'+lp           
-
-```
-
-and test with
-```
-CUDA_VISIBLE_DEVICES=0 python -m eval.miou logs/30/checkpoint_final.pth pascal_context --singlescale
-CUDA_VISIBLE_DEVICES=1 python -m eval.miou logs/31/checkpoint_final.pth pascal_context --singlescale
-CUDA_VISIBLE_DEVICES=2 python -m eval.miou logs/32/checkpoint_final.pth pascal_context --singlescale
-CUDA_VISIBLE_DEVICES=3 python -m eval.miou logs/33/checkpoint_final.pth pascal_context --singlescale
-CUDA_VISIBLE_DEVICES=4 python -m eval.miou logs/20/checkpoint_final.pth ade20k --singlescale
-CUDA_VISIBLE_DEVICES=5 python -m eval.miou logs/21/checkpoint_final.pth ade20k --singlescale
 ```
