@@ -27,7 +27,7 @@ class Block(nn.Module):
 
 class MyTransformer(nn.Module):
     def __init__(self, num_blocks, k, d_backbone, mlp_dim, num_heads=None, head_dim=64, 
-                 normalize_over=[0, 1], momentum=0.99):
+                 normalize_over=[0, 1], momentum=0.99, orthogonal_linear=True):
         super().__init__()
         self.num_blocks = num_blocks
         self.hidden_dim = d_backbone * 3
@@ -43,10 +43,11 @@ class MyTransformer(nn.Module):
             blocks.append(Block(self.hidden_dim, num_heads, head_dim, mlp_dim))
         self.blocks = nn.Sequential(*blocks)
         self.norm = nn.LayerNorm(self.hidden_dim)
-        self.head = orthogonal(nn.Linear(self.hidden_dim, self.psi_dim, bias=True))
+        if orthogonal_linear:
+            self.head = orthogonal(nn.Linear(self.hidden_dim, self.psi_dim, bias=True))
+        else:
+            self.head = nn.Linear(self.hidden_dim, self.psi_dim, bias=True)
 
-        # self.register_buffer('eigennorm', torch.zeros(self.psi_dim))
-        # self.register_buffer('num_calls', torch.Tensor([0]))
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -70,19 +71,14 @@ class MyTransformer(nn.Module):
     def forward(self, x, tau=None):
         hidden = self.norm(self.blocks(x))
         ret_raw = self.head(hidden)
-        if tau is not None:
-            ret_raw = torch.nn.functional.gumbel_softmax(ret_raw, tau=tau, hard=False)
-            # ret_raw = torch.nn.functional.softmax(ret_raw, dim=-1)
+        if self.training:
+            if tau is not None:
+                ret_raw = torch.nn.functional.gumbel_softmax(ret_raw, tau=tau, hard=False)
+            else:
+                ret_raw = torch.nn.functional.softmax(ret_raw, dim=-1)
 
         if self.training:
             norm_ = ret_raw.norm(dim=self.normalize_over).clamp(min=1)
-            # with torch.no_grad():
-            #     if self.num_calls == 0:
-            #         self.eigennorm.copy_(norm_.data)
-            #     else:
-            #         self.eigennorm.mul_(self.momentum).add_(
-            #             norm_.data, alpha = 1-self.momentum)
-            #     self.num_calls += 1
         else:
-            norm_ = 1 #self.eigennorm
+            norm_ = 1
         return hidden, ret_raw / norm_

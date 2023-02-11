@@ -16,7 +16,7 @@ def create_dataset(dataset_kwargs):
 
     # load dataset_name
     if dataset_name == "imagenet":
-        dataset_kwargs.pop("patch_size")
+        # dataset_kwargs.pop("patch_size")
         dataset = ImagenetDataset(split=split, **dataset_kwargs)
     elif dataset_name == "ade20k":
         dataset = ADE20KSegmentation(split=split, **dataset_kwargs)

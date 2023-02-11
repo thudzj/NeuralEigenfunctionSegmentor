@@ -84,7 +84,7 @@ class Segmenter(nn.Module):
         midlevel_feature = self.feat_out["midlevel_feature"]
         return lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W
 
-    def forward(self, im, tau=None, return_neuralef_loss=False, return_features=False):
+    def forward(self, im, tau=None, return_neuralef_loss=False, return_features=False, none_mask=False):
         with torch.no_grad():
             lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W = self.forward_features(im)
             h = H // self.patch_size
@@ -99,24 +99,25 @@ class Segmenter(nn.Module):
             else:
                 assert 0
 
-        if self.training:
-            masks = self.online_head(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+        if none_mask:
+            masks = None
         else:
-            if self.mode == 'our':
-                masks = rearrange(Psi, "b (h w) c -> b h w c", h=h).permute(0, 3, 1, 2).div(self.tau_min)
-            elif self.mode == 'our_kmeans':
-                masks = self.clustering(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
-            elif self.mode == 'kmeans':
-                masks = self.clustering(rearrange(highlevel_feature, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
-            elif self.mode == 'linear_probe':
+            if self.training:
                 masks = self.online_head(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
             else:
-                assert 0
-
-        upsample_bs = 16 if self.training else 2
-        masks = torch.cat([F.interpolate(masks[i*upsample_bs:min((i+1)*upsample_bs, len(masks))], size=(H, W), mode="bilinear")
-            for i in range(int(math.ceil(float(len(masks))/upsample_bs)))])
-        masks = unpadding(masks, (H_ori, W_ori))
+                if self.mode == 'our':
+                    masks = rearrange(Psi, "b (h w) c -> b h w c", h=h).permute(0, 3, 1, 2).div(self.tau_min)
+                elif self.mode == 'our_kmeans':
+                    masks = self.clustering(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+                elif self.mode == 'kmeans':
+                    masks = self.clustering(rearrange(highlevel_feature, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+                else:
+                    assert 0
+            
+            upsample_bs = 16 if self.training else 2
+            masks = torch.cat([F.interpolate(masks[i*upsample_bs:min((i+1)*upsample_bs, len(masks))], size=(H, W), mode="bilinear")
+                for i in range(int(math.ceil(float(len(masks))/upsample_bs)))])
+            masks = unpadding(masks, (H_ori, W_ori))
 
         if return_neuralef_loss:
             with torch.no_grad():

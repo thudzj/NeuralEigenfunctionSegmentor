@@ -49,12 +49,8 @@ warnings.filterwarnings('ignore')
 @click.option("--psi_num_blocks", default=None, type=int)
 @click.option("--psi_k", default=None, type=int)
 @click.option("--psi_mlp_dim", default=None, type=int)
+@click.option("--orthogonal_linear/--no-orthogonal_linear", default=True, is_flag=True)
 
-# @click.option("--kmeans_feature", default=None, type=str)
-# @click.option("--kmeans_tradeoff", default=None, type=float)
-# @click.option("--kmeans_n_cls", default=None, type=int)
-# @click.option("--kmeans_dim", default=None, type=int)
-# @click.option("--kmeans_tau", default=None, type=float)
 
 @click.option("--alpha", default=None, type=float)
 @click.option("--t", default=None, type=float)
@@ -65,11 +61,10 @@ warnings.filterwarnings('ignore')
 @click.option("--pixelwise_weight", default=None, type=float)
 
 @click.option("--tau_max", default=1., type=float)
-@click.option("--tau_min", default=1., type=float)
+@click.option("--tau_min", default=0.3, type=float)
 
 @click.option("--eval-only/--no-eval-only", default=False, is_flag=True)
 @click.option("--mode", default='our', type=str)
-@click.option("--disable-crf/--no-disable-crf", default=False, is_flag=True)
 @click.option("--reco/--no-reco", default=False, is_flag=True)
 
 def main(
@@ -95,11 +90,7 @@ def main(
     psi_num_blocks,
     psi_k,
     psi_mlp_dim,
-    # kmeans_feature,
-    # kmeans_tradeoff,
-    # kmeans_n_cls,
-    # kmeans_dim,
-    # kmeans_tau,
+    orthogonal_linear,
     alpha,
     t,
     no_sg,
@@ -111,9 +102,7 @@ def main(
     tau_min,
     eval_only,
     mode,
-    disable_crf,
     reco
-    # linear_probe_given
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -121,8 +110,6 @@ def main(
 
     if eval_only:
         resume = True
-    
-    # is_linear_probe=(linear_probe_given is not None)
 
     # set up configuration
     cfg = config.load_config()
@@ -135,19 +122,8 @@ def main(
         psi_cfg['k'] = psi_k
     if psi_mlp_dim is not None:
         psi_cfg['mlp_dim'] = psi_mlp_dim
+    psi_cfg['orthogonal_linear'] = orthogonal_linear
 
-    # kmeans_cfg = cfg["kmeans"]
-    # if kmeans_feature is not None:
-    #     kmeans_cfg['feature'] = kmeans_feature
-    # if kmeans_tradeoff is not None:
-    #     kmeans_cfg['tradeoff'] = kmeans_tradeoff
-    # if kmeans_n_cls is not None:
-    #     kmeans_cfg['n_cls'] = kmeans_n_cls
-    # if kmeans_dim is not None:
-    #     kmeans_cfg['dim'] = kmeans_dim
-    # if kmeans_tau is not None:
-    #     kmeans_cfg['tau'] = kmeans_tau
-    
     neuralef_loss_cfg = cfg['neuralef']
     if alpha is not None:
         neuralef_loss_cfg['alpha'] = alpha
@@ -231,7 +207,6 @@ def main(
         net_kwargs=dict(
             backbone=backbone_cfg,
             psi=psi_cfg,
-            # kmeans=kmeans_cfg,
             neuralef=neuralef_loss_cfg,
             backbone_trained_by_dino='dino' in backbone,
         ),
@@ -265,8 +240,8 @@ def main(
     model = create_segmenter(net_kwargs)
     model.mode = mode
     model.tau_min = tau_min
-    if mode == 'linear_probe':
-        ptu.freeze_all_layers_(model.psi)
+    if dataset == 'imagenet':
+        del model.online_head
     model.to(ptu.device)
 
     # optimizer
@@ -295,15 +270,6 @@ def main(
         print(f"Resuming training from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model_ckpt = checkpoint["model"]
-        # for k in list(model_ckpt.keys()):
-            # if 'cluster_centers' in k:
-            #     if model_ckpt[k].shape[1] != model.clustering_feature_dim or model_ckpt[k].shape[0] != kmeans_cfg['n_cls']:
-            #         del model_ckpt[k]
-            #         del model_ckpt[k.replace("cluster_centers", "num_per_cluster")]
-            # if 'online_head.weight' in k:
-            #     if model_ckpt[k].shape[1] != model.clustering_feature_dim:
-            #         del model_ckpt[k]
-            #         del model_ckpt[k.replace("weight", "bias")]
         print(model.load_state_dict(model_ckpt, strict=False))
         if not eval_only:
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -311,21 +277,6 @@ def main(
                 loss_scaler.load_state_dict(checkpoint["loss_scaler"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         variant["algorithm_kwargs"]["start_epoch"] = checkpoint["epoch"] + 1
-    # elif is_linear_probe:
-    #     print(f"Linear probe from: {linear_probe_given}")
-    #     if os.path.exists(linear_probe_given):
-    #         checkpoint = torch.load(linear_probe_given, map_location="cpu")
-    #         model_ckpt = checkpoint["model"]
-    #         for k in list(model_ckpt.keys()):
-    #             if 'cluster_centers' in k:
-    #                 del model_ckpt[k]
-    #                 del model_ckpt[k.replace("cluster_centers", "num_per_cluster")]
-    #             if 'online_head.weight' in k:
-    #                 del model_ckpt[k]
-    #                 del model_ckpt[k.replace("weight", "bias")]
-    #         print(model.load_state_dict(model_ckpt, strict=False))
-    #     else:
-    #         print(f"{linear_probe_given} not exist")
     else:
         sync_model(log_dir, model)
 
@@ -349,16 +300,8 @@ def main(
     if hasattr(model, "module"):
         model_without_ddp = model.module
 
-    val_seg_gt = val_loader.dataset.get_gt_seg_maps()
-    if dataset == 'pascal_context':
-        # ignore the background class
-        from data.utils import IGNORE_LABEL
-        keys = val_seg_gt.keys()
-        for k in keys:
-            segmap = val_seg_gt[k]
-            segmap[segmap == 0] = IGNORE_LABEL
-            val_seg_gt[k] = segmap
-
+    if dataset != 'imagenet':
+        val_seg_gt = val_loader.dataset.get_gt_seg_maps()
     print(f"Train dataset length: {len(train_loader.dataset)}")
     print(f"Val dataset length: {len(val_loader.dataset)}")
     print(f"Backbone parameters: {num_params(model_without_ddp.backbone)}")
@@ -372,6 +315,7 @@ def main(
         # train for one epoch
         train_logger = train_one_epoch(
             num_epochs,
+            dataset,
             model,
             train_loader,
             optimizer,
@@ -381,24 +325,7 @@ def main(
             loss_scaler,
             tau_max,
             tau_min,
-            # is_linear_probe=is_linear_probe
         )
-
-        # if epoch % 10 == 9:
-        #     eval_logger = evaluate(
-        #         is_linear_probe,
-        #         dataset,
-        #         epoch,
-        #         model,
-        #         val_loader,
-        #         val_seg_gt,
-        #         window_size,
-        #         window_stride,
-        #         amp_autocast,
-        #         log_dir,
-        #         tau_min,
-        #     )
-        #     print(f"Stats ['final']:", eval_logger, flush=True)
 
         # save checkpoint
         if ptu.dist_rank == 0:
@@ -430,40 +357,32 @@ def main(
                 f.write(json.dumps(log_stats) + "\n")
 
     # evaluate
-    # if not is_linear_probe:
-    #     fit_pca(model, train_loader)
     if 'kmeans' in model.mode:
         perform_kmeans(model, train_loader, simulate_one_epoch=True)
 
     if reco:
-        reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
+        if dataset == 'imagenet':
+            reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir)
+            reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir)
+        else:
+            reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
     else:
-        eval_logger = evaluate(
-            # is_linear_probe,
-            dataset,
-            num_epochs,
-            model,
-            val_loader,
-            val_seg_gt,
-            window_size,
-            window_stride,
-            amp_autocast,
-            log_dir,
-            disable_crf
-            # tau_min
-        )
-        print(f"Stats ['final']:", eval_logger, flush=True)
-        print("")
-
-    # # save checkpoint
-    # if ptu.dist_rank == 0:
-    #     snapshot = dict(
-    #         model=model_without_ddp.state_dict(),
-    #         n_cls=model_without_ddp.n_cls,   
-    #     )
-    #     snapshot["epoch"] = num_epochs
-    #     torch.save(snapshot, log_dir / "checkpoint_final.pth")
-    #     del snapshot
+        if dataset == 'imagenet':
+            raise NotImplementedError
+        else:
+            eval_logger = evaluate(
+                dataset,
+                num_epochs,
+                model,
+                val_loader,
+                val_seg_gt,
+                window_size,
+                window_stride,
+                amp_autocast,
+                log_dir,
+            )
+            print(f"Stats ['final']:", eval_logger, flush=True)
+            print("")
 
     distributed.barrier()
     distributed.destroy_process()

@@ -20,20 +20,18 @@ from timm import optim
 from optim.scheduler import PolynomialLR
 from fast_pytorch_kmeans import KMeans
 
-from typing import List
 from torch.utils.data import DataLoader
-from multiprocessing import Pool
 import matplotlib.pyplot as plt
 import json
 
 from reco.utils.utils import get_dataset
 from reco.metrics.running_score import RunningScore
-from reco.utils.crf import batched_crf
 from reco.datasets.coco_stuff import coco_stuff_171_to_27
 
 
 def train_one_epoch(
     num_epochs,
+    dataset,
     model,
     data_loader,
     optimizer,
@@ -43,18 +41,14 @@ def train_one_epoch(
     loss_scaler,
     tau_max,
     tau_min,
-    # is_linear_probe
 ):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
     logger = MetricLogger(delimiter="  ")
     header = f"Epoch: [{epoch}]"
     print_freq = 100 if len(data_loader) >= 100 else 50
 
-    if model.mode == 'linear_probe':
-        model.eval()
-    else:
-        model.train()
-        model.backbone.eval()
+    model.train()
+    model.backbone.eval()
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
     batch_size = None
@@ -67,34 +61,32 @@ def train_one_epoch(
             break
 
         tau = (math.cos(num_updates / float(num_epochs * len(data_loader)) * math.pi) + 1.) / 2. * (tau_max - tau_min) + tau_min
+        tau = None if tau < 0 else tau
         with amp_autocast():
-            if model.mode == 'linear_probe':
-                seg_pred = model.forward(im)
-                neuralef_loss, neuralef_reg = torch.tensor([0.]).to(ptu.device), torch.tensor([0.]).to(ptu.device)
+            seg_pred, neuralef_loss, neuralef_reg = model.forward(im, tau=tau, return_neuralef_loss=True, none_mask=(dataset == 'imagenet'))
+            if seg_pred is not None:
+                loss = criterion(seg_pred, seg_gt)
+                with torch.no_grad():
+                    mask_ = (seg_gt != IGNORE_LABEL).float()
+                    mask_sum_ = mask_.sum()
+                    acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
             else:
-                seg_pred, neuralef_loss, neuralef_reg = model.forward(im, tau=tau, return_neuralef_loss=True)
-            loss = criterion(seg_pred, seg_gt)
-            # loss2 = criterion(seg_pred2, seg_gt)
+                loss = torch.zeros_like(neuralef_loss)
+                acc = torch.zeros_like(neuralef_loss)
 
-            with torch.no_grad():
-                mask_ = (seg_gt != IGNORE_LABEL).float()
-                mask_sum_ = mask_.sum()
-                acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
-                # acc2 = ((seg_pred2.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
-        
-        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item() # + loss2.item()
+        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item()
         if not math.isfinite(loss_value):
             print("Loss is {}, {}, {} stopping training".format(loss.item(), neuralef_loss.item(), neuralef_reg.item()), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + neuralef_loss + neuralef_reg, # + loss2
+                loss + neuralef_loss + neuralef_reg,
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + neuralef_loss + neuralef_reg).backward() # + loss2
+            (loss + neuralef_loss + neuralef_reg).backward()
             optimizer.step()
 
         num_updates += 1
@@ -106,12 +98,10 @@ def train_one_epoch(
         torch.cuda.synchronize()
         logger.update(
             loss=loss.item(),
-            # loss2=loss2.item(),
             acc=acc.item(),
-            # acc2=acc2.item(),
             neuralef_loss=neuralef_loss.item(),
             neuralef_reg=neuralef_reg.item(),
-            tau=tau,
+            tau=tau or 0,
             learning_rate=optimizer.param_groups[0]["lr"],
         )
     return logger
@@ -163,7 +153,6 @@ def perform_kmeans(
 
 @torch.no_grad()
 def evaluate(
-    # is_linear_probe,
     dataset,
     epoch,
     model,
@@ -173,8 +162,6 @@ def evaluate(
     window_stride,
     amp_autocast,
     log_dir,
-    disable_crf
-    # tau_min,
 ):
     n_cls_train = model.psi.psi_dim
     n_cls = data_loader.unwrapped.n_cls
@@ -186,13 +173,13 @@ def evaluate(
     print_freq = 100
 
     if dataset == 'ade20k':
-        cat_names, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
+        _, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
         val_img_folder =  os.path.expandvars("$DATASET/") + 'ade20k/ADEChallengeData2016/images/validation/'
     elif dataset == 'pascal_context':
-        cat_names, cat_colors = dataset_cat_description(PASCAL_CONTEXT_CATS_PATH)
+        _, cat_colors = dataset_cat_description(PASCAL_CONTEXT_CATS_PATH)
         val_img_folder = os.path.expandvars("$DATASET/") + 'pcontext/VOCdevkit/VOC2010/JPEGImages/'
     elif dataset == 'cityscapes':
-        cat_names, cat_colors = dataset_cat_description(CITYSCAPES_CATS_PATH)
+        _, cat_colors = dataset_cat_description(CITYSCAPES_CATS_PATH)
         val_img_folder =  os.path.expandvars("$DATASET/") + 'cityscapes/leftImg8bit/val/'
     else:
         assert 0
@@ -218,49 +205,37 @@ def evaluate(
                 ori_shape,
                 window_size,
                 window_stride,
-                n_cls if model.mode == 'linear_probe' else n_cls_train,
-                # tau_min=1 if is_linear_probe else tau_min,
+                n_cls_train,
                 batch_size=1,
             )
-            if disable_crf:
-                val_seg_pred[filename] = seg_pred.argmax(0).cpu().numpy()
-            else:
-                to_perform_crf.append((filename, seg_pred.cpu().numpy()))
-                if len(to_perform_crf) == (8 if dataset == 'cityscapes' else 64) or counts == len(data_loader):
-                    # CRF in multi-process
-                    results = joblib.Parallel(n_jobs=8, backend='multiprocessing', verbose=9)( # 16
-                        [joblib.delayed(process)(to_perform_crf[i][0], to_perform_crf[i][1], val_img_folder) 
-                            for i in range(len(to_perform_crf))]
-                    )
-                    for i in range(len(to_perform_crf)):
-                        val_seg_pred[to_perform_crf[i][0]] = results[i]
+            
+            # val_seg_pred[filename] = seg_pred.argmax(0).cpu().numpy()
+            to_perform_crf.append((filename, seg_pred.cpu().numpy()))
+            if len(to_perform_crf) == (8 if dataset == 'cityscapes' else 64) or counts == len(data_loader):
+                # CRF in multi-process
+                results = joblib.Parallel(n_jobs=8, backend='multiprocessing', verbose=0)(
+                    [joblib.delayed(process)(to_perform_crf[i][0], to_perform_crf[i][1], val_img_folder) 
+                        for i in range(len(to_perform_crf))]
+                )
+                for i in range(len(to_perform_crf)):
+                    val_seg_pred[to_perform_crf[i][0]] = results[i]
 
-                    to_perform_crf = []
+                to_perform_crf = []
 
     val_seg_pred = gather_data(val_seg_pred)
     keys = val_seg_pred.keys()
 
-    if model.mode != 'linear_probe':
-        # find the mapping from ground-truth labels to clustering assignments
-        maps = optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, IGNORE_LABEL, iou=True)
-        print(torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0))
-        un_matched = (torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0) == 0).nonzero()
-        print("un_matched", un_matched.numpy())
-        # rotate the clustering assignments
-        for k in keys:
-            val_seg_pred[k] = maps[val_seg_pred[k]]
+    # find the mapping from ground-truth labels to clustering assignments
+    maps = optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, IGNORE_LABEL, iou=True)
+    print(torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0))
+    un_matched = (torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0) == 0).nonzero()
+    print("un_matched", un_matched.numpy())
+    # rotate the clustering assignments
+    for k in keys:
+        val_seg_pred[k] = maps[val_seg_pred[k]]
     
-    # list_keys = list(keys)
-    # # CRF in multi-process
-    # results = joblib.Parallel(n_jobs=16, backend='multiprocessing', verbose=9)(
-    #     [joblib.delayed(process)(list_keys[i], val_seg_pred[list_keys[i]], model.n_cls, val_img_folder) 
-    #           for i in range(len(list_keys))]
-    # )
-    # for i in range(len(list_keys)):
-    #     val_seg_pred[list_keys[i]] = results[i]
-
     # the following visualization code works
-    vis_dir = log_dir / (str(epoch) + "_" + model.mode) #+ model.kmeans_cfg['feature']
+    vis_dir = log_dir / (str(epoch) + "_" + model.mode)
     vis_dir.mkdir(parents=True, exist_ok=True)
     for i, k in enumerate(keys):
         seg_rgb = seg_to_rgb(torch.from_numpy(val_seg_pred[k])[None, :, :], cat_colors)
@@ -292,14 +267,6 @@ def evaluate(
     return logger
 
 def process(k, val_seg_pred_, val_img_folder):
-    
-    # unary_potentials = np.transpose(
-    #     np.reshape(
-    #         np.eye(n_cls)[val_seg_pred_.reshape(-1)], 
-    #         (val_seg_pred_.shape[0], val_seg_pred_.shape[1], n_cls)
-    #     ), 
-    #     (2, 0, 1)
-    # )
     unary_potentials = val_seg_pred_
     if val_img_folder is None:
         image = k.astype(np.uint8)
@@ -336,9 +303,6 @@ def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou
         v1 = val_seg_gt
         v2 = val_seg_pred
 
-    # print('Using majority voting for matching')
-    # match = eval_utils.majority_vote(v2, v1, preds_k=n_cls_train, targets_k=n_cls, n_jobs=8)
-    # return np.array([aa[1] for aa in match])
     counts = np.zeros((n_cls_train, n_cls))
     count_ignore_indice = np.zeros((n_cls_train,))
     for i in tqdm.tqdm(range(n_cls_train)):
@@ -362,7 +326,7 @@ def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou
 
 @torch.no_grad()
 def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, batch_size=32, n_workers=4):
-    vis_dir = dir_ckpt / "reco" / model.mode
+    vis_dir = dir_ckpt / "reco" / model.mode / dataset_name
     vis_dir.mkdir(parents=True, exist_ok=True)
 
     model.eval()

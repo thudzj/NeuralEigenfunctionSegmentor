@@ -9,18 +9,23 @@ from PIL import Image
 
 from data import utils
 from config import dataset_dir
+from data.utils import STATS
 
 
 class ImagenetDataset(Dataset):
     def __init__(
         self,
-        root_dir,
+        root_dir="/home/LargeData/Large/ImageNet",
         image_size=224,
         crop_size=224,
         split="train",
         normalization="vit",
+        crop=True,
     ):
         super().__init__()
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
+
         assert image_size[0] == image_size[1]
 
         self.path = Path(root_dir) / split
@@ -35,6 +40,7 @@ class ImagenetDataset(Dataset):
                     transforms.RandomResizedCrop(self.crop_size, interpolation=3),
                     transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
+                    transforms.Normalize(list(STATS[self.normalization]['mean']), list(STATS[self.normalization]['std']))
                 ]
             )
         else:
@@ -58,5 +64,5 @@ class ImagenetDataset(Dataset):
 
     def __getitem__(self, idx):
         im, target = self.base_dataset[idx]
-        im = utils.rgb_normalize(im, self.normalization)
-        return dict(im=im, target=target)
+        # im = utils.rgb_normalize(im, self.normalization)
+        return dict(im=im, target=target, segmentation=target)
