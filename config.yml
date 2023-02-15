@@ -143,21 +143,19 @@ backbone:
     n_heads: 16
     n_layers: 24
     normalization: vit
-psi:
-  num_blocks: 2
-  k: 2048
-  mlp_dim: 576
-  num_heads: 18
-  head_dim: 64
-  orthogonal_linear: true
-neuralef:
-  t: 0.01
-  alpha: 0.02
-  no_sg: false
-  num_nearestn_feature: 256
-  num_nearestn_pixel1: 10
-  num_nearestn_pixel2: 5
-  pixelwise_weight: 0.3
+encoder:
+  input_type: high-mid-low
+  d_model: 512
+  residual: false
+  embedding_dim: 32
+  n_embeddings: 128
+decoder:
+  n_layers: 2
+  d_model: 384
+  n_heads: 6
+loss:
+  recon_target: highlevel_feature
+  beta: 1.
 dataset:
   ade20k:
     epochs: 64

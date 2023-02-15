@@ -1,3 +1,4 @@
 logs
 *__pycache__
 segmaps
+vqseg_logs

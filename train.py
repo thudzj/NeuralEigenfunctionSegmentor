@@ -20,7 +20,7 @@ from timm.utils import NativeScaler
 from contextlib import suppress
 
 from utils.distributed import sync_model
-from engine import train_one_epoch, evaluate, perform_kmeans, reco_protocal_eval
+from engine import train_one_epoch, evaluate, reco_protocal_eval
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -46,26 +46,22 @@ warnings.filterwarnings('ignore')
 @click.option("--amp/--no-amp", default=False, is_flag=True)
 @click.option("--resume/--no-resume", default=True, is_flag=True)
 
-@click.option("--psi_num_blocks", default=None, type=int)
-@click.option("--psi_k", default=None, type=int)
-@click.option("--psi_mlp_dim", default=None, type=int)
-@click.option("--orthogonal_linear/--no-orthogonal_linear", default=True, is_flag=True)
-
-
-@click.option("--alpha", default=None, type=float)
-@click.option("--t", default=None, type=float)
-@click.option("--no_sg/--no-no_sg", default=False, is_flag=True)
-@click.option("--num_nearestn_feature", default=None, type=int)
-@click.option("--num_nearestn_pixel1", default=None, type=int)
-@click.option("--num_nearestn_pixel2", default=None, type=int)
-@click.option("--pixelwise_weight", default=None, type=float)
-
-@click.option("--tau_max", default=1., type=float)
-@click.option("--tau_min", default=0.3, type=float)
-
 @click.option("--eval-only/--no-eval-only", default=False, is_flag=True)
-@click.option("--mode", default='our', type=str)
 @click.option("--reco/--no-reco", default=False, is_flag=True)
+
+@click.option("--beta", default=None, type=float)
+@click.option("--recon_target", default=None, type=str)
+
+@click.option("--encoder_input_type", default=None, type=str)
+@click.option("--encoder_d_model", default=None, type=int)
+@click.option("--encoder_residual/--no-encoder_residual", default=False, is_flag=True)
+
+@click.option("--embedding_dim", default=None, type=int)
+@click.option("--n_embeddings", default=None, type=int)
+
+@click.option("--decoder_n_layers", default=None, type=int)
+@click.option("--decoder_d_model", default=None, type=int)
+@click.option("--decoder_n_heads", default=None, type=int)
 
 def main(
     log_dir,
@@ -87,22 +83,18 @@ def main(
     eval_freq,
     amp,
     resume,
-    psi_num_blocks,
-    psi_k,
-    psi_mlp_dim,
-    orthogonal_linear,
-    alpha,
-    t,
-    no_sg,
-    num_nearestn_feature,
-    num_nearestn_pixel1,
-    num_nearestn_pixel2,
-    pixelwise_weight,
-    tau_max,
-    tau_min,
     eval_only,
-    mode,
-    reco
+    reco,
+    beta,
+    recon_target,
+    encoder_input_type,
+    encoder_d_model,
+    encoder_residual,
+    embedding_dim,
+    n_embeddings,
+    decoder_n_layers,
+    decoder_d_model,
+    decoder_n_heads
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -114,32 +106,10 @@ def main(
     # set up configuration
     cfg = config.load_config()
     backbone_cfg = cfg["backbone"][backbone]
-
-    psi_cfg = cfg["psi"]
-    if psi_num_blocks is not None:
-        psi_cfg['num_blocks'] = psi_num_blocks
-    if psi_k is not None:
-        psi_cfg['k'] = psi_k
-    if psi_mlp_dim is not None:
-        psi_cfg['mlp_dim'] = psi_mlp_dim
-    psi_cfg['orthogonal_linear'] = orthogonal_linear
-
-    neuralef_loss_cfg = cfg['neuralef']
-    if alpha is not None:
-        neuralef_loss_cfg['alpha'] = alpha
-    if t is not None:
-        neuralef_loss_cfg['t'] = t
-    neuralef_loss_cfg['no_sg'] = no_sg
-    if num_nearestn_feature is not None:
-        neuralef_loss_cfg['num_nearestn_feature'] = num_nearestn_feature
-    if num_nearestn_pixel1 is not None:
-        neuralef_loss_cfg['num_nearestn_pixel1'] = num_nearestn_pixel1
-    if num_nearestn_pixel2 is not None:
-        neuralef_loss_cfg['num_nearestn_pixel2'] = num_nearestn_pixel2
-    if pixelwise_weight is not None:
-        neuralef_loss_cfg['pixelwise_weight'] = pixelwise_weight
-
+    encoder_cfg = cfg["encoder"]
+    decoder_cfg = cfg["decoder"]
     dataset_cfg = cfg["dataset"][dataset]
+    loss_cfg = cfg["loss"]
 
     # model config
     if not im_size:
@@ -154,6 +124,28 @@ def main(
     backbone_cfg["image_size"] = (crop_size, crop_size)
     backbone_cfg["name"] = backbone
     backbone_cfg["dropout"] = dropout
+
+    if beta is not None:
+        loss_cfg['beta'] = beta
+    if recon_target is not None:
+        loss_cfg['recon_target'] = recon_target
+
+    if encoder_input_type is not None:
+        encoder_cfg['input_type'] = encoder_input_type
+    if encoder_d_model is not None:
+        encoder_cfg['d_model'] = encoder_d_model
+    encoder_cfg['residual'] = encoder_residual
+    if embedding_dim is not None:
+        encoder_cfg['embedding_dim'] = embedding_dim
+    if n_embeddings is not None:
+        encoder_cfg['n_embeddings'] = n_embeddings
+    
+    if decoder_n_layers is not None:
+        decoder_cfg['n_layers'] = decoder_n_layers
+    if decoder_d_model is not None:
+        decoder_cfg['d_model'] = decoder_d_model
+    if decoder_n_heads is not None:
+        decoder_cfg['n_heads'] = decoder_n_heads
 
     # dataset config
     world_batch_size = dataset_cfg["batch_size"]
@@ -205,11 +197,12 @@ def main(
             poly_step_size=1,
         ),
         net_kwargs=dict(
+            encoder=encoder_cfg,
+            decoder=decoder_cfg,
             backbone=backbone_cfg,
-            psi=psi_cfg,
-            neuralef=neuralef_loss_cfg,
             backbone_trained_by_dino='dino' in backbone,
         ),
+        loss_kwargs=loss_cfg,
         amp=amp,
         log_dir=log_dir,
         inference_kwargs=dict(
@@ -236,12 +229,9 @@ def main(
 
     # model
     net_kwargs = variant["net_kwargs"]
+    loss_kwargs = variant["loss_kwargs"]
     net_kwargs["n_cls"] = n_cls
-    model = create_segmenter(net_kwargs)
-    model.mode = mode
-    model.tau_min = tau_min
-    if dataset == 'imagenet':
-        del model.online_head
+    model = create_segmenter(net_kwargs, loss_kwargs)
     model.to(ptu.device)
 
     # optimizer
@@ -305,8 +295,10 @@ def main(
     print(f"Train dataset length: {len(train_loader.dataset)}")
     print(f"Val dataset length: {len(val_loader.dataset)}")
     print(f"Backbone parameters: {num_params(model_without_ddp.backbone)}")
-    print(f"Psi parameters: {num_params(model_without_ddp.psi)}")
-    print(model_without_ddp.psi)
+    print(f"Backbone parameters: {num_params(model_without_ddp.encoder)}")
+    print(f"Backbone parameters: {num_params(model_without_ddp.decoder)}")
+    print(model_without_ddp.encoder)
+    print(model_without_ddp.decoder)
 
     for epoch in range(start_epoch, num_epochs):
         if eval_only:
@@ -323,8 +315,7 @@ def main(
             epoch,
             amp_autocast,
             loss_scaler,
-            tau_max,
-            tau_min,
+            log_dir,
         )
 
         # save checkpoint
@@ -356,16 +347,12 @@ def main(
             with open(log_dir / "log.txt", "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    # evaluate
-    if 'kmeans' in model.mode:
-        perform_kmeans(model, train_loader, simulate_one_epoch=True)
-
     if reco:
         if dataset == 'imagenet':
-            reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir)
-            reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir)
+            reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir, n_cls_train=encoder_cfg['n_embeddings'])
+            reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir, n_cls_train=encoder_cfg['n_embeddings'])
         else:
-            reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
+            reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir, n_cls_train=encoder_cfg['n_embeddings'])
     else:
         if dataset == 'imagenet':
             raise NotImplementedError
@@ -380,6 +367,8 @@ def main(
                 window_stride,
                 amp_autocast,
                 log_dir,
+                n_cls,
+                n_cls_train=encoder_cfg['n_embeddings']
             )
             print(f"Stats ['final']:", eval_logger, flush=True)
             print("")

@@ -39,8 +39,7 @@ def train_one_epoch(
     epoch,
     amp_autocast,
     loss_scaler,
-    tau_max,
-    tau_min,
+    log_dir
 ):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
     logger = MetricLogger(delimiter="  ")
@@ -52,6 +51,7 @@ def train_one_epoch(
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
     batch_size = None
+    vq_stats = torch.zeros(model.encoder.n_embeddings).to(ptu.device)
     for batch in logger.log_every(data_loader, print_freq, header):
         im = batch["im"].to(ptu.device)
         seg_gt = batch["segmentation"].long().to(ptu.device)
@@ -60,33 +60,31 @@ def train_one_epoch(
         if im.shape[0] < batch_size:
             break
 
-        tau = (math.cos(num_updates / float(num_epochs * len(data_loader)) * math.pi) + 1.) / 2. * (tau_max - tau_min) + tau_min
-        tau = None if tau < 0 else tau
         with amp_autocast():
-            seg_pred, neuralef_loss, neuralef_reg = model.forward(im, tau=tau, return_neuralef_loss=True, none_mask=(dataset == 'imagenet'))
-            if seg_pred is not None:
-                loss = criterion(seg_pred, seg_gt)
-                with torch.no_grad():
-                    mask_ = (seg_gt != IGNORE_LABEL).float()
-                    mask_sum_ = mask_.sum()
-                    acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
-            else:
-                loss = torch.zeros_like(neuralef_loss)
-                acc = torch.zeros_like(neuralef_loss)
+            seg_pred, vq_pred, recon_loss, vq_loss, commit_loss = model.forward(im, return_all=True)
+            loss = criterion(seg_pred, seg_gt)
+            with torch.no_grad():
+                mask_ = (seg_gt != IGNORE_LABEL).float()
+                mask_sum_ = mask_.sum()
+                acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
 
-        loss_value = loss.item() + neuralef_loss.item() + neuralef_reg.item()
+                vq_pred_argmax = vq_pred.argmax(dim=1)
+                vq_used, vq_counts = torch.unique(vq_pred_argmax.view(-1), sorted=True, return_counts=True) 
+                vq_stats[vq_used] += vq_counts
+
+        loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item()
         if not math.isfinite(loss_value):
-            print("Loss is {}, {}, {} stopping training".format(loss.item(), neuralef_loss.item(), neuralef_reg.item()), force=True)
+            print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item(), vq_loss.item(), commit_loss.item()), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + neuralef_loss + neuralef_reg,
+                loss + recon_loss + vq_loss + commit_loss,
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + neuralef_loss + neuralef_reg).backward()
+            (loss + recon_loss + vq_loss + commit_loss).backward()
             optimizer.step()
 
         num_updates += 1
@@ -99,57 +97,27 @@ def train_one_epoch(
         logger.update(
             loss=loss.item(),
             acc=acc.item(),
-            neuralef_loss=neuralef_loss.item(),
-            neuralef_reg=neuralef_reg.item(),
-            tau=tau or 0,
+            recon_loss=recon_loss.item(),
+            vq_loss=vq_loss.item(),
+            commit_loss=commit_loss.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
         )
-    return logger
 
-@torch.no_grad()
-def perform_kmeans(
-    model,
-    data_loader,
-    simulate_one_epoch=False,
-):
-    n_cls_train = model.psi.psi_dim
-    model.eval()
-    data_loader.set_epoch(999)
-    cached_features = []
-    for i, batch in tqdm.tqdm(enumerate(data_loader), 'init cluster centers'):
-        im = batch["im"].to(ptu.device)
-        feature = model.forward(im, return_features=True)
-        feature = feature.reshape(-1, feature.shape[-1])
-        cached_features.append(feature)
-        torch.cuda.synchronize()
-        if sum([item.numel() for item in cached_features]) > 2000000000:
-            break
-    cached_features = torch.cat(cached_features)
+    # print the stats of the usage of embeddings
+    with np.printoptions(precision=3, suppress=True): #, linewidth=100000
+        print(vq_stats.div(vq_stats.sum()).data.cpu().numpy())
     
-    while 1:
-        try:
-            kmeans = KMeans(n_clusters=n_cls_train, mode='euclidean', verbose=1)
-            assignments = kmeans.fit_predict(cached_features)
-            break
-        except Exception as e:
-            cached_features = cached_features[:int(len(cached_features)*0.8)]
+    # save some quantization results
+    _, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
+    vis_dir = log_dir / 'vq_seg' / (str(epoch))
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(5):
+        seg_rgb = seg_to_rgb(vq_pred_argmax[i].cpu()[None, :, :], cat_colors)
+        seg_rgb = (255 * seg_rgb.cpu().numpy()).astype(np.uint8)
+        pil_seg = Image.fromarray(seg_rgb[0])
+        pil_seg.save(vis_dir / "{}.png".format(i))
 
-    del cached_features
-    cached_features = None
-
-    model.register_buffer("cluster_centers", kmeans.centroids) 
-    onehot_assignments = torch.nn.functional.one_hot(assignments, n_cls_train)
-    model.register_buffer("num_per_cluster", onehot_assignments.long().sum(0))
-    del kmeans, onehot_assignments
-
-    if simulate_one_epoch:
-        data_loader.set_epoch(1000)
-        for i, batch in tqdm.tqdm(enumerate(data_loader), 'tune centers'):
-            im = batch["im"].to(ptu.device)
-            feature = model.forward(im, return_features=True)
-            feature = feature.reshape(-1, feature.shape[-1])
-            model.clustering(feature, update=True)
-            torch.cuda.synchronize()
+    return logger
 
 @torch.no_grad()
 def evaluate(
@@ -162,9 +130,9 @@ def evaluate(
     window_stride,
     amp_autocast,
     log_dir,
+    n_cls,
+    n_cls_train,
 ):
-    n_cls_train = model.psi.psi_dim
-    n_cls = data_loader.unwrapped.n_cls
     model_without_ddp = model
     if hasattr(model, "module"):
         model_without_ddp = model.module
@@ -235,7 +203,7 @@ def evaluate(
         val_seg_pred[k] = maps[val_seg_pred[k]]
     
     # the following visualization code works
-    vis_dir = log_dir / (str(epoch) + "_" + model.mode)
+    vis_dir = log_dir / (str(epoch))
     vis_dir.mkdir(parents=True, exist_ok=True)
     for i, k in enumerate(keys):
         seg_rgb = seg_to_rgb(torch.from_numpy(val_seg_pred[k])[None, :, :], cat_colors)
@@ -256,7 +224,7 @@ def evaluate(
     scores = compute_metrics(
         val_seg_pred,
         val_seg_gt,
-        data_loader.unwrapped.n_cls,
+        n_cls,
         ignore_index=IGNORE_LABEL,
         distributed=ptu.distributed,
     )
@@ -325,13 +293,12 @@ def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou
 
 
 @torch.no_grad()
-def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, batch_size=32, n_workers=4):
-    vis_dir = dir_ckpt / "reco" / model.mode / dataset_name
+def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, n_cls_train, batch_size=32, n_workers=4):
+    vis_dir = dir_ckpt / "reco" / dataset_name
     vis_dir.mkdir(parents=True, exist_ok=True)
 
     model.eval()
 
-    n_cls_train = model.psi.psi_dim
     if dataset_name == 'pascal_context':
         dir_dataset = os.path.expandvars("$DATASET/") + 'pcontext/VOCdevkit/VOC2010/'
     elif dataset_name == 'cityscapes':

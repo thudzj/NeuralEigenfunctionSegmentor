@@ -172,7 +172,6 @@ def inference(
     window_size,
     window_stride,
     C,
-    # tau_min,
     batch_size,
 ):
     model.eval()
@@ -189,7 +188,7 @@ def inference(
         with torch.no_grad():
             for i in range(0, B, WB):
                 seg_maps[i : i + WB] = model.forward(crops[i : i + WB])
-        windows["seg_maps"] = seg_maps # / tau_min
+        windows["seg_maps"] = seg_maps
         im_seg_map = merge_windows(windows, window_size, ori_shape)
         seg_map += im_seg_map
     seg_map /= len(ims)
