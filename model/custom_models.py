@@ -111,76 +111,93 @@ class VQEmbedding(nn.Module):
 ############## for convolutional encoder  ##################
 ############################################################
 
-class PlainConv(nn.Module):
-    def __init__(self, dim):
+from linear_attention_transformer.linear_attention_transformer import SelfAttention as LinearSelfAttention
+from timm.models.layers import trunc_normal_
+from model.blocks import FeedForward
+from einops import rearrange, repeat
+
+class Block(nn.Module):
+    def __init__(self, dim, heads, head_dim, mlp_dim, dropout=0):
         super().__init__()
-        self.block = nn.Sequential(
-            nn.ReLU(True),
-            nn.Conv2d(dim, dim, 3, 1, 1),
-            nn.BatchNorm2d(dim),
-        )
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.attn = LinearSelfAttention(dim, causal=False, heads=heads, dim_head=head_dim)
+        self.mlp = FeedForward(dim, mlp_dim, dropout)
 
-    def forward(self, x):
-        return self.block(x)
-
-class PlainConvT(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.ReLU(True),
-            nn.ConvTranspose2d(dim, dim//2, 4, 2, 1),
-            nn.BatchNorm2d(dim//2),
-        )
-
-    def forward(self, x):
-        return self.block(x)
-
-class ResBlock(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.ReLU(True),
-            nn.Conv2d(dim, dim, 3, 1, 1),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(True),
-            nn.Conv2d(dim, dim, 1),
-            nn.BatchNorm2d(dim)
-        )
-
-    def forward(self, x):
-        return x + self.block(x)
+    def forward(self, x, mask=None):
+        y = self.attn(self.norm1(x), mask)
+        x = x + y
+        x = x + self.mlp(self.norm2(x))
+        return x
 
 class Encoder(nn.Module):
-    def __init__(self, input_type, d_backbone=768, d_model=512, patch_size=16, embedding_dim=32, n_embeddings=128, residual=True):
+    def __init__(self, 
+            input_type, 
+            d_backbone, 
+            patch_size, 
+            d_model, 
+            mlp_dim, 
+            n_layers=2, 
+            num_heads=None, 
+            head_dim=64, 
+            upsample_ratio=1, 
+            embedding_dim=32, 
+            n_embeddings=128
+        ):
         super().__init__()
         self.n_embeddings = n_embeddings
         self.embedding_dim = embedding_dim
         self.inputs = list(input_type.split("-"))
 
-        num_upsample_times = int(math.log2(patch_size))
-        Block = ResBlock if residual else PlainConv
-        self.encoder = nn.Sequential(
-            nn.Sequential(nn.Conv2d(d_backbone * len(self.inputs), d_model, 3, 1, 1), nn.BatchNorm2d(d_model)),
-            *[nn.Sequential(PlainConvT(d_model // (2 ** i)), Block(d_model // (2 ** (i + 1)))) for i in range(num_upsample_times - 1)],
-            nn.ReLU(True),
-            nn.ConvTranspose2d(d_model // (patch_size // 2), embedding_dim, 4, 2, 1),
-        )
+        if num_heads is None:
+            num_heads = d_model//head_dim
+
+        self.preprocess = nn.Linear(d_backbone * len(self.inputs), d_model)
+        blocks = []
+        for i in range(n_layers):
+            blocks.append(Block(d_model, num_heads, head_dim, mlp_dim))
+        self.blocks = nn.Sequential(*blocks)
+        self.norm = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, embedding_dim, bias=True)
+
+        self.upsample_ratio = upsample_ratio
+        self.remaining_upsample_ratio = patch_size // (upsample_ratio ** n_layers)
+
+        self.initialize_weights()
         self.codebook = VQEmbedding(n_embeddings, embedding_dim)
 
-        self.apply(self.init_func)
 
-    def init_func(self, m):
-        classname = m.__class__.__name__
+    def initialize_weights(self):
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d)):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
-        if classname.find('Conv2d') != -1:
-            nn.init.xavier_uniform_(m.weight.data)
-            m.bias.data.fill_(0)
-        elif classname.find('BatchNorm') != -1:
-            # m.weight.data.normal_(1.0, 0.02)
-            m.bias.data.fill_(0)
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {
+            k for k, _ in self.named_parameters()
+            if any(n in k for n in ["bias"])}
 
     def forward(self, x):
-        z_e_x = self.encoder(x)
+        out = self.preprocess(x)
+        for block in self.blocks:
+            out = block(out)
+            if self.upsample_ratio > 1:
+                out = rearrange(out, "b (w h) l -> b l w h", w=int(math.sqrt(out.shape[1])))
+                out = F.interpolate(out, size=(out.shape[2] * self.upsample_ratio, out.shape[3] * self.upsample_ratio), mode="bilinear")
+                out = out.permute(0, 2, 3, 1).flatten(1, 2)
+
+        out = self.head(self.norm(out))
+        out = rearrange(out, "b (w h) l -> b l w h", w=int(math.sqrt(out.shape[1])))
+        z_e_x = F.interpolate(out, size=(out.shape[2] * self.remaining_upsample_ratio, out.shape[3] * self.remaining_upsample_ratio), mode="bilinear")
+
         z_q_x_st, z_q_x, logits = self.codebook.straight_through(z_e_x)
         return z_e_x, z_q_x_st, z_q_x, logits
 
@@ -188,23 +205,29 @@ class Encoder(nn.Module):
 ############## for transformer-based decoder  ##############
 ############################################################
 
-from timm.models.layers import trunc_normal_
-from model.blocks import Block as VitBlock
 from model.vit import PatchEmbedding
 from model.utils import init_weights, resize_pos_embed
 
 class Decoder(nn.Module):
     def __init__(self,
+            d_backbone,
+            patch_size,
+            image_size,
             d_model,
-            n_heads,
-            d_ff=None,
-            image_size=512,
-            patch_size=16,
+            mlp_dim, 
+            n_layers=2, 
+            num_heads=None, 
+            head_dim=64,
             embedding_dim=32,
-            n_layers=2,
-            d_backbone=768
+            apply_pos_embed=False,
         ):
         super().__init__()
+
+        if num_heads is None:
+            num_heads = d_model//head_dim
+        self.apply_pos_embed = apply_pos_embed
+
+        self.patch_size = patch_size
         self.patch_embed = PatchEmbedding(
             image_size,
             patch_size,
@@ -212,59 +235,53 @@ class Decoder(nn.Module):
             embedding_dim,
         )
 
-        if d_ff is None:
-            mlp_expansion_ratio = 4
-            d_ff = mlp_expansion_ratio * d_model
+        # pos tokens
+        if apply_pos_embed:
+            self.pos_embed = nn.Parameter(
+                torch.randn(1, self.patch_embed.num_patches, d_model)
+            )
 
-        self.patch_size = patch_size
-        self.n_layers = n_layers
-        self.d_model = d_model
-        self.d_ff = d_ff
-        self.n_heads = n_heads
+        blocks = []
+        for i in range(n_layers):
+            blocks.append(Block(d_model, num_heads, head_dim, mlp_dim))
+        self.blocks = nn.Sequential(*blocks)
 
-        # cls and pos tokens
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
-        self.pos_embed = nn.Parameter(
-            torch.randn(1, self.patch_embed.num_patches + 1, d_model)
-        )
-
-        # transformer blocks
-        self.blocks = nn.ModuleList(
-            [VitBlock(d_model, n_heads, d_ff, 0, 0) for i in range(n_layers)]
-        )
-
-        # output head
         self.norm = nn.LayerNorm(d_model)
-        self.head = nn.Linear(d_model, d_backbone)
+        self.head = nn.Linear(d_model, d_backbone, bias=True)
 
-        trunc_normal_(self.pos_embed, std=0.02)
-        trunc_normal_(self.cls_token, std=0.02)
+        self.initialize_weights()
 
-        self.apply(init_weights)
+    def initialize_weights(self):
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d)):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {"pos_embed", "cls_token"}
+        return {
+            k for k, _ in self.named_parameters()
+            if any(n in k for n in ["bias"])}
 
     def forward(self, im):
-        B, _, H, W = im.shape
+        _, _, H, W = im.shape
         PS = self.patch_size
 
         x = self.patch_embed(im)
-        cls_tokens = self.cls_token.expand(B, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        pos_embed = self.pos_embed
-        num_extra_tokens = 1
-        if x.shape[1] != pos_embed.shape[1]:
-            pos_embed = resize_pos_embed(
-                pos_embed,
-                self.patch_embed.grid_size,
-                (H // PS, W // PS),
-                num_extra_tokens,
-            )
-        x = x + pos_embed
-
-        for blk in self.blocks:
-            x = blk(x)
-        return self.head(self.norm(x[:, num_extra_tokens:]))
+        if self.apply_pos_embed:
+            pos_embed = self.pos_embed
+            if x.shape[1] != pos_embed.shape[1]:
+                pos_embed = resize_pos_embed(
+                    pos_embed,
+                    self.patch_embed.grid_size,
+                    (H // PS, W // PS),
+                    0,
+                )
+            x = x + pos_embed
+        return self.head(self.norm(self.blocks(x)))

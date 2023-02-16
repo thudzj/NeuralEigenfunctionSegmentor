@@ -145,14 +145,19 @@ backbone:
     normalization: vit
 encoder:
   input_type: high-mid-low
-  d_model: 512
-  residual: false
+  n_layers: 2
+  d_model: 768
+  mlp_dim: 768
+  head_dim: 64
+  upsample_ratio: 1
   embedding_dim: 32
   n_embeddings: 128
 decoder:
   n_layers: 2
-  d_model: 384
-  n_heads: 6
+  d_model: 768
+  mlp_dim: 768
+  head_dim: 64
+  apply_pos_embed: true
 loss:
   recon_target: highlevel_feature
   beta: 1.

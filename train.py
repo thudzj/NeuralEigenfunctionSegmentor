@@ -53,15 +53,19 @@ warnings.filterwarnings('ignore')
 @click.option("--recon_target", default=None, type=str)
 
 @click.option("--encoder_input_type", default=None, type=str)
+@click.option("--encoder_n_layers", default=None, type=int)
 @click.option("--encoder_d_model", default=None, type=int)
-@click.option("--encoder_residual/--no-encoder_residual", default=False, is_flag=True)
+@click.option("--encoder_mlp_dim", default=None, type=int)
+@click.option("--encoder_head_dim", default=None, type=int)
+@click.option("--encoder_upsample_ratio", default=None, type=int)
 
 @click.option("--embedding_dim", default=None, type=int)
 @click.option("--n_embeddings", default=None, type=int)
 
 @click.option("--decoder_n_layers", default=None, type=int)
 @click.option("--decoder_d_model", default=None, type=int)
-@click.option("--decoder_n_heads", default=None, type=int)
+@click.option("--decoder_mlp_dim", default=None, type=int)
+@click.option("--decoder_head_dim", default=None, type=int)
 
 def main(
     log_dir,
@@ -88,13 +92,17 @@ def main(
     beta,
     recon_target,
     encoder_input_type,
+    encoder_n_layers,
     encoder_d_model,
-    encoder_residual,
+    encoder_mlp_dim,
+    encoder_head_dim,
+    encoder_upsample_ratio,
     embedding_dim,
     n_embeddings,
     decoder_n_layers,
     decoder_d_model,
-    decoder_n_heads
+    decoder_mlp_dim,
+    decoder_head_dim
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -132,9 +140,17 @@ def main(
 
     if encoder_input_type is not None:
         encoder_cfg['input_type'] = encoder_input_type
+    if encoder_n_layers is not None:
+        encoder_cfg['n_layers'] = encoder_n_layers
     if encoder_d_model is not None:
         encoder_cfg['d_model'] = encoder_d_model
-    encoder_cfg['residual'] = encoder_residual
+    if encoder_mlp_dim is not None:
+        encoder_cfg['mlp_dim'] = encoder_mlp_dim
+    if encoder_head_dim is not None:
+        encoder_cfg['head_dim'] = encoder_head_dim
+    if encoder_upsample_ratio is not None:
+        encoder_cfg['upsample_ratio'] = encoder_upsample_ratio
+
     if embedding_dim is not None:
         encoder_cfg['embedding_dim'] = embedding_dim
     if n_embeddings is not None:
@@ -144,8 +160,10 @@ def main(
         decoder_cfg['n_layers'] = decoder_n_layers
     if decoder_d_model is not None:
         decoder_cfg['d_model'] = decoder_d_model
-    if decoder_n_heads is not None:
-        decoder_cfg['n_heads'] = decoder_n_heads
+    if decoder_mlp_dim is not None:
+        decoder_cfg['mlp_dim'] = decoder_mlp_dim
+    if decoder_head_dim is not None:
+        decoder_cfg['head_dim'] = decoder_head_dim
 
     # dataset config
     world_batch_size = dataset_cfg["batch_size"]

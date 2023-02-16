@@ -76,16 +76,17 @@ class Segmenter(nn.Module):
             h = H // self.patch_size
         
         features_map = {"high": highlevel_feature, "mid": midlevel_feature, "low": midlevel_feature}
-        encoder_input = torch.cat([features_map[item] for item in self.encoder.inputs], dim=-1)
-        x = rearrange(encoder_input, "b (h w) c -> b h w c", h=h).permute(0, 3, 1, 2)
+        x = torch.cat([features_map[item] for item in self.encoder.inputs], dim=-1)
         z_e_x, z_q_x_st, z_q_x, vq_logits = self.encoder(x)
-        vq_logits = unpadding(vq_logits, (H_ori, W_ori))
         
         if self.training:
             logits = self.online_head(z_e_x.detach().permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            logits = unpadding(logits, (H_ori, W_ori))
         else:
             logits = vq_logits
+        
+        # if logits.shape[2] != H:
+        #     logits = F.interpolate(logits, size=(H, W), mode="bilinear")
+        logits = unpadding(logits, (H_ori, W_ori))
 
         if return_all:
             x_tilde = self.decoder(z_q_x_st)
