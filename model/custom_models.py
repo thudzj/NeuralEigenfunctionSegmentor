@@ -73,8 +73,9 @@ class VectorQuantizationStraightThrough(Function):
 class VQEmbedding(nn.Module):
     def __init__(self, K, D):
         super().__init__()
+        self.K = K
         self.embedding = nn.Embedding(K, D)
-        self.embedding.weight.data.uniform_(-1./K, 1./K)
+        self.embedding.weight.data.uniform_(-1., 1.)
 
     def forward(self, z_e_x):
         z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()
@@ -104,8 +105,20 @@ class VQEmbedding(nn.Module):
                 inputs_flatten, self.embedding.weight.t(), alpha=-2.0, beta=1.0)
             distances = distances.view(*inputs_size[:-1],self.embedding.weight.size(0))
             logits = -distances.permute(0, 3, 1, 2).contiguous()
+            #print("distances.shape",distances.shape) #torch.Size([16, 480, 480, 128])
 
         return z_q_x, z_q_x_bar, logits
+    def get_codebook_distance_loss(self):
+        '''
+            motivation: seperate the embeddings
+            return: sum of the square of the distance of every two embedding in codebook
+        '''
+        all_distance = 0 
+        distance_mat = F.pairwise_distance(self.embedding.weight.data, self.embedding.weight.data, p=2, eps=1e-06)
+        for i in range(self.K):
+            all_distance += distance_mat[i]
+        distance_loss = all_distance
+        return distance_loss
 
 ############################################################
 ############## for convolutional encoder  ##################
@@ -116,6 +129,7 @@ from timm.models.layers import trunc_normal_
 from model.blocks import FeedForward
 from einops import rearrange, repeat
 
+#transformer layer
 class Block(nn.Module):
     def __init__(self, dim, heads, head_dim, mlp_dim, dropout=0):
         super().__init__()
@@ -153,6 +167,8 @@ class Encoder(nn.Module):
             num_heads = d_model//head_dim
 
         self.preprocess = nn.Linear(d_backbone * len(self.inputs), d_model)
+        #concat了hog特征之后的preprocess
+        #self.preprocess = nn.Linear(d_backbone * len(self.inputs) + 108, d_model)
         blocks = []
         for i in range(n_layers):
             blocks.append(Block(d_model, num_heads, head_dim, mlp_dim))
@@ -199,7 +215,8 @@ class Encoder(nn.Module):
         z_e_x = F.interpolate(out, size=(out.shape[2] * self.remaining_upsample_ratio, out.shape[3] * self.remaining_upsample_ratio), mode="bilinear")
 
         z_q_x_st, z_q_x, logits = self.codebook.straight_through(z_e_x)
-        return z_e_x, z_q_x_st, z_q_x, logits
+        distance_loss = self.codebook.get_codebook_distance_loss()
+        return z_e_x, z_q_x_st, z_q_x, logits, distance_loss
 
 ############################################################
 ############## for transformer-based decoder  ##############
@@ -234,12 +251,14 @@ class Decoder(nn.Module):
             d_model,
             embedding_dim,
         )
-
         # pos tokens
         if apply_pos_embed:
             self.pos_embed = nn.Parameter(
                 torch.randn(1, self.patch_embed.num_patches, d_model)
             )
+
+        self.preprocess = nn.Linear(d_backbone + d_model, d_model)
+        self.norm0 = nn.LayerNorm(d_model)
 
         blocks = []
         for i in range(n_layers):
@@ -247,8 +266,11 @@ class Decoder(nn.Module):
         self.blocks = nn.Sequential(*blocks)
 
         self.norm = nn.LayerNorm(d_model)
-        self.head = nn.Linear(d_model, d_backbone, bias=True)
+        # canny 256
+        self.head = nn.Linear(d_model, 256, bias=True)
 
+        # use hog feature
+        # self.head = nn.Linear(d_model, 108, bias=True)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -269,7 +291,7 @@ class Decoder(nn.Module):
             k for k, _ in self.named_parameters()
             if any(n in k for n in ["bias"])}
 
-    def forward(self, im):
+    def forward(self, im, highlevel_feature):
         _, _, H, W = im.shape
         PS = self.patch_size
 
@@ -284,4 +306,5 @@ class Decoder(nn.Module):
                     0,
                 )
             x = x + pos_embed
+        
         return self.head(self.norm(self.blocks(x)))

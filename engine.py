@@ -61,7 +61,9 @@ def train_one_epoch(
             break
 
         with amp_autocast():
-            seg_pred, vq_pred, recon_loss, vq_loss, commit_loss = model.forward(im, return_all=True)
+            seg_pred, vq_pred, recon_loss, vq_loss, commit_loss, distance_loss, entropy_loss = model.forward(im, return_all=True)
+            # seg_pred shape torch.Size([16, 60, 480, 480]) logits
+            # vq_pred shape torch.Size([16, 128, 480, 480]) vq_logits
             loss = criterion(seg_pred, seg_gt)
             with torch.no_grad():
                 mask_ = (seg_gt != IGNORE_LABEL).float()
@@ -72,6 +74,7 @@ def train_one_epoch(
                 vq_used, vq_counts = torch.unique(vq_pred_argmax.view(-1), sorted=True, return_counts=True) 
                 vq_stats[vq_used] += vq_counts
 
+        # loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item() + entropy_loss.item()
         loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item()
         if not math.isfinite(loss_value):
             print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item(), vq_loss.item(), commit_loss.item()), force=True)
@@ -79,12 +82,13 @@ def train_one_epoch(
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + recon_loss + vq_loss + commit_loss,
+                loss + recon_loss + vq_loss + commit_loss ,
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + recon_loss + vq_loss + commit_loss).backward()
+            (loss + recon_loss + vq_loss + commit_loss ).backward()
+            #(loss + recon_loss + vq_loss + commit_loss + distance_loss).backward()
             optimizer.step()
 
         num_updates += 1
@@ -106,6 +110,9 @@ def train_one_epoch(
     # print the stats of the usage of embeddings
     with np.printoptions(precision=3, suppress=True): #, linewidth=100000
         print(vq_stats.div(vq_stats.sum()).data.cpu().numpy())
+        #vq_used_p = vq_stats.div(vq_stats.sum()).data.cpu().numpy()
+        #print(type(vq_used_p))
+        #print(vq_used_p.shape)
     
     # save some quantization results
     _, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
@@ -177,18 +184,18 @@ def evaluate(
                 batch_size=1,
             )
             
-            # val_seg_pred[filename] = seg_pred.argmax(0).cpu().numpy()
-            to_perform_crf.append((filename, seg_pred.cpu().numpy()))
-            if len(to_perform_crf) == (8 if dataset == 'cityscapes' else 64) or counts == len(data_loader):
-                # CRF in multi-process
-                results = joblib.Parallel(n_jobs=8, backend='multiprocessing', verbose=0)(
-                    [joblib.delayed(process)(to_perform_crf[i][0], to_perform_crf[i][1], val_img_folder) 
-                        for i in range(len(to_perform_crf))]
-                )
-                for i in range(len(to_perform_crf)):
-                    val_seg_pred[to_perform_crf[i][0]] = results[i]
+            val_seg_pred[filename] = seg_pred.argmax(0).cpu().numpy()
+            # to_perform_crf.append((filename, seg_pred.cpu().numpy()))
+            # if len(to_perform_crf) == (8 if dataset == 'cityscapes' else 64) or counts == len(data_loader):
+            #     # CRF in multi-process
+            #     results = joblib.Parallel(n_jobs=8, backend='multiprocessing', verbose=0)(
+            #         [joblib.delayed(process)(to_perform_crf[i][0], to_perform_crf[i][1], val_img_folder) 
+            #             for i in range(len(to_perform_crf))]
+            #     )
+            #     for i in range(len(to_perform_crf)):
+            #         val_seg_pred[to_perform_crf[i][0]] = results[i]
 
-                to_perform_crf = []
+            #     to_perform_crf = []
 
     val_seg_pred = gather_data(val_seg_pred)
     keys = val_seg_pred.keys()

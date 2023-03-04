@@ -46,6 +46,7 @@ def create_backbone(backbone_cfg):
     
 def create_encoder(backbone, encoder_cfg):
     encoder_cfg = encoder_cfg.copy()
+    #d_model dimension
     encoder_cfg["d_backbone"] = backbone.d_model 
     encoder_cfg["patch_size"] = backbone.patch_embed.patch_size
     encoder = Encoder(**encoder_cfg)
