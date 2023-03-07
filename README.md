@@ -230,4 +230,7 @@ zero-shot transfer
 CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/11 --dataset imagenet --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 5 -lr .001 --psi_k 256 --alpha 0.08 --reco
     city: mIoU (bi) 0.185 (0.185) | Pixel acc (bi) 0.810 (0.812)
     pascal_context: mIoU (bi) 0.151 (0.152) | Pixel acc (bi) 0.557 (0.558)
+
+visualize eigenfunctions:
+CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/40-2 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --eval-only --vis_eigenfunc
 ```

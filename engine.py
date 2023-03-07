@@ -23,6 +23,7 @@ from fast_pytorch_kmeans import KMeans
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import json
+import torchvision
 
 from reco.utils.utils import get_dataset
 from reco.metrics.running_score import RunningScore
@@ -474,3 +475,31 @@ def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, batc
 
     json.dump(results, open(vis_dir / f"results.json", "w"))
     json.dump(results_crf, open(vis_dir / f"results_crf.json", "w"))
+
+
+def vis_eigenfuncs(model, data_loader, amp_autocast, log_dir):
+    model.eval()
+    data_loader.set_epoch(-1)
+
+    batch = next(iter(data_loader))
+    im = batch["im"].to(ptu.device)
+    seg_gt = batch["segmentation"].long().to(ptu.device)
+    with torch.no_grad():
+        with amp_autocast():
+            seg_pred = model.forward(im)
+    print(seg_pred.shape)
+
+    vis_dir = log_dir / "eigenfuncs"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    for i in range(seg_pred.shape[0]):
+        # images = list(seg_pred[i].data.cpu().numpy())
+        # for j, image in enumerate(images[:5]):
+        #     print(i, j, image.max(), image.min(), image.shape)
+        efs = seg_pred[i][:5].unsqueeze(1).repeat(1, 3, 1, 1)
+        # efs = seg_pred[i].softmax(0)[:5].unsqueeze(1).repeat(1, 3, 1, 1)
+        efs = (efs - efs.amin(dim=(1,2,3), keepdim=True))/(efs.amax(dim=(1,2,3), keepdim=True) - efs.amin(dim=(1,2,3), keepdim=True))
+        
+        ims = torch.cat([im[i].unsqueeze(0).add(1.).div(2.), efs], 0)
+        # torchvision.utils.save_image(, log_dir / ("eigenfuncs/" + "original_" + str(i) + ".png"))
+        torchvision.utils.save_image(ims, log_dir / ("eigenfuncs/" + str(i) + ".png"))

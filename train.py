@@ -20,7 +20,7 @@ from timm.utils import NativeScaler
 from contextlib import suppress
 
 from utils.distributed import sync_model
-from engine import train_one_epoch, evaluate, perform_kmeans, reco_protocal_eval
+from engine import train_one_epoch, evaluate, perform_kmeans, reco_protocal_eval, vis_eigenfuncs
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -64,6 +64,7 @@ warnings.filterwarnings('ignore')
 @click.option("--tau_min", default=0.3, type=float)
 
 @click.option("--eval-only/--no-eval-only", default=False, is_flag=True)
+@click.option("--vis_eigenfunc/--no-vis_eigenfunc", default=False, is_flag=True)
 @click.option("--mode", default='our', type=str)
 @click.option("--reco/--no-reco", default=False, is_flag=True)
 
@@ -101,6 +102,7 @@ def main(
     tau_max,
     tau_min,
     eval_only,
+    vis_eigenfunc,
     mode,
     reco
 ):
@@ -356,33 +358,36 @@ def main(
             with open(log_dir / "log.txt", "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    # evaluate
-    if 'kmeans' in model.mode:
-        perform_kmeans(model, train_loader, simulate_one_epoch=True)
-
-    if reco:
-        if dataset == 'imagenet':
-            reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir)
-            reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir)
-        else:
-            reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
+    if vis_eigenfunc:
+        vis_eigenfuncs(model, train_loader, amp_autocast, log_dir)
     else:
-        if dataset == 'imagenet':
-            raise NotImplementedError
+        # evaluate
+        if 'kmeans' in model.mode:
+            perform_kmeans(model, train_loader, simulate_one_epoch=True)
+
+        if reco:
+            if dataset == 'imagenet':
+                reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir)
+                reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir)
+            else:
+                reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
         else:
-            eval_logger = evaluate(
-                dataset,
-                num_epochs,
-                model,
-                val_loader,
-                val_seg_gt,
-                window_size,
-                window_stride,
-                amp_autocast,
-                log_dir,
-            )
-            print(f"Stats ['final']:", eval_logger, flush=True)
-            print("")
+            if dataset == 'imagenet':
+                raise NotImplementedError
+            else:
+                eval_logger = evaluate(
+                    dataset,
+                    num_epochs,
+                    model,
+                    val_loader,
+                    val_seg_gt,
+                    window_size,
+                    window_stride,
+                    amp_autocast,
+                    log_dir,
+                )
+                print(f"Stats ['final']:", eval_logger, flush=True)
+                print("")
 
     distributed.barrier()
     distributed.destroy_process()
