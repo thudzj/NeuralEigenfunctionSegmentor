@@ -49,6 +49,7 @@ warnings.filterwarnings('ignore')
 @click.option("--eval-only/--no-eval-only", default=False, is_flag=True)
 @click.option("--reco/--no-reco", default=False, is_flag=True)
 
+@click.option("--rec_ratio", default=None, type=float)
 @click.option("--beta", default=None, type=float)
 @click.option("--recon_target", default=None, type=str)
 
@@ -89,6 +90,7 @@ def main(
     resume,
     eval_only,
     reco,
+    rec_ratio,
     beta,
     recon_target,
     encoder_input_type,
@@ -135,6 +137,8 @@ def main(
 
     if beta is not None:
         loss_cfg['beta'] = beta
+    if rec_ratio is not None:
+        loss_cfg['rec_ratio'] = rec_ratio
     if recon_target is not None:
         loss_cfg['recon_target'] = recon_target
 
@@ -262,8 +266,12 @@ def main(
     optimizer_kwargs["decay_rate"] = 1
     opt_args = argparse.Namespace()
     opt_vars = vars(opt_args)
+    codebook_params = [p for n, p in model.named_parameters() if p.requires_grad and "codebook" in n]
+    other_params = [p for n, p in model.named_parameters() if p.requires_grad and "codebook" not in n]
+    param_group = [{"params": codebook_params, "learning_rate": lr * 10}, {"params": other_params, "learning_rate": lr}]
     for k, v in optimizer_kwargs.items():
         opt_vars[k] = v
+    # optimizer = create_optimizer(opt_args, param_group)
     optimizer = create_optimizer(opt_args, [p for p in model.parameters() if p.requires_grad])
     if num_epochs > 0:
         lr_scheduler = create_scheduler(opt_args, optimizer)
@@ -334,6 +342,7 @@ def main(
             amp_autocast,
             loss_scaler,
             log_dir,
+            batch_size
         )
 
         # save checkpoint

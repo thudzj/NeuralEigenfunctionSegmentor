@@ -174,13 +174,13 @@ class Encoder(nn.Module):
             blocks.append(Block(d_model, num_heads, head_dim, mlp_dim))
         self.blocks = nn.Sequential(*blocks)
         self.norm = nn.LayerNorm(d_model)
-        self.head = nn.Linear(d_model, embedding_dim, bias=True)
+        self.head = nn.Linear(d_model, n_embeddings, bias=True)
 
         self.upsample_ratio = upsample_ratio
         self.remaining_upsample_ratio = patch_size // (upsample_ratio ** n_layers)
 
         self.initialize_weights()
-        self.codebook = VQEmbedding(n_embeddings, embedding_dim)
+        # self.codebook = VQEmbedding(n_embeddings, embedding_dim)
 
 
     def initialize_weights(self):
@@ -201,7 +201,7 @@ class Encoder(nn.Module):
             k for k, _ in self.named_parameters()
             if any(n in k for n in ["bias"])}
 
-    def forward(self, x):
+    def forward(self, x, tau=1):
         out = self.preprocess(x)
         for block in self.blocks:
             out = block(out)
@@ -214,9 +214,11 @@ class Encoder(nn.Module):
         out = rearrange(out, "b (w h) l -> b l w h", w=int(math.sqrt(out.shape[1])))
         z_e_x = F.interpolate(out, size=(out.shape[2] * self.remaining_upsample_ratio, out.shape[3] * self.remaining_upsample_ratio), mode="bilinear")
 
-        z_q_x_st, z_q_x, logits = self.codebook.straight_through(z_e_x)
-        distance_loss = self.codebook.get_codebook_distance_loss()
-        return z_e_x, z_q_x_st, z_q_x, logits, distance_loss
+        # logits = 
+        z_q_x = F.gumbel_softmax(z_e_x, tau)
+        # z_q_x_st, z_q_x, logits = self.codebook.straight_through(z_e_x)
+        # distance_loss = self.codebook.get_codebook_distance_loss()
+        return z_e_x, z_q_x #z_e_x, None, z_q_x, logits, distance_loss
 
 ############################################################
 ############## for transformer-based decoder  ##############
@@ -235,6 +237,7 @@ class Decoder(nn.Module):
             n_layers=2, 
             num_heads=None, 
             head_dim=64,
+            n_embeddings=128,
             embedding_dim=32,
             apply_pos_embed=False,
         ):
@@ -249,16 +252,13 @@ class Decoder(nn.Module):
             image_size,
             patch_size,
             d_model,
-            embedding_dim,
+            n_embeddings,
         )
         # pos tokens
         if apply_pos_embed:
             self.pos_embed = nn.Parameter(
                 torch.randn(1, self.patch_embed.num_patches, d_model)
             )
-
-        self.preprocess = nn.Linear(d_backbone + d_model, d_model)
-        self.norm0 = nn.LayerNorm(d_model)
 
         blocks = []
         for i in range(n_layers):
@@ -267,7 +267,7 @@ class Decoder(nn.Module):
 
         self.norm = nn.LayerNorm(d_model)
         # canny 256
-        self.head = nn.Linear(d_model, 256, bias=True)
+        self.head = nn.Linear(d_model, d_backbone, bias=True)
 
         # use hog feature
         # self.head = nn.Linear(d_model, 108, bias=True)
@@ -291,7 +291,7 @@ class Decoder(nn.Module):
             k for k, _ in self.named_parameters()
             if any(n in k for n in ["bias"])}
 
-    def forward(self, im, highlevel_feature):
+    def forward(self, im):
         _, _, H, W = im.shape
         PS = self.patch_size
 

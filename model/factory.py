@@ -57,6 +57,7 @@ def create_decoder(backbone, encoder_cfg, decoder_cfg):
     decoder_cfg["image_size"] = backbone.patch_embed.image_size
     decoder_cfg["d_backbone"] = backbone.d_model
     decoder_cfg["embedding_dim"] = encoder_cfg['embedding_dim']
+    decoder_cfg["n_embeddings"] = encoder_cfg['n_embeddings']
     decoder_cfg["patch_size"] = backbone.patch_embed.patch_size #encoder_cfg['upsample_ratio'] ** encoder_cfg['n_layers'] # 
     
     decoder = Decoder(**decoder_cfg)

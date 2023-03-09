@@ -39,7 +39,8 @@ def train_one_epoch(
     epoch,
     amp_autocast,
     loss_scaler,
-    log_dir
+    log_dir,
+    batch_size
 ):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
     logger = MetricLogger(delimiter="  ")
@@ -50,9 +51,13 @@ def train_one_epoch(
     model.backbone.eval()
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
+    total_updates = num_epochs * len(data_loader)
     batch_size = None
     vq_stats = torch.zeros(model.encoder.n_embeddings).to(ptu.device)
     for batch in logger.log_every(data_loader, print_freq, header):
+
+        tau = 1 - num_updates / total_updates / 2.
+
         im = batch["im"].to(ptu.device)
         seg_gt = batch["segmentation"].long().to(ptu.device)
         if batch_size is None:
@@ -61,9 +66,7 @@ def train_one_epoch(
             break
 
         with amp_autocast():
-            seg_pred, vq_pred, recon_loss, vq_loss, commit_loss, distance_loss, entropy_loss = model.forward(im, return_all=True)
-            # seg_pred shape torch.Size([16, 60, 480, 480]) logits
-            # vq_pred shape torch.Size([16, 128, 480, 480]) vq_logits
+            seg_pred, vq_pred, recon_loss = model.forward(im, return_all=True, tau=tau)
             loss = criterion(seg_pred, seg_gt)
             with torch.no_grad():
                 mask_ = (seg_gt != IGNORE_LABEL).float()
@@ -75,19 +78,19 @@ def train_one_epoch(
                 vq_stats[vq_used] += vq_counts
 
         # loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item() + entropy_loss.item()
-        loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item()
+        loss_value = loss.item() + recon_loss.item() # + vq_loss.item() + commit_loss.item()
         if not math.isfinite(loss_value):
-            print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item(), vq_loss.item(), commit_loss.item()), force=True)
+            print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item()), force=True) #, vq_loss.item(), commit_loss.item()), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + recon_loss + vq_loss + commit_loss ,
+                loss + recon_loss, # + vq_loss + commit_loss ,
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + recon_loss + vq_loss + commit_loss ).backward()
+            (loss + recon_loss).backward() # + vq_loss + commit_loss ).backward()
             #(loss + recon_loss + vq_loss + commit_loss + distance_loss).backward()
             optimizer.step()
 
@@ -102,8 +105,8 @@ def train_one_epoch(
             loss=loss.item(),
             acc=acc.item(),
             recon_loss=recon_loss.item(),
-            vq_loss=vq_loss.item(),
-            commit_loss=commit_loss.item(),
+            # vq_loss=vq_loss.item(),
+            # commit_loss=commit_loss.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
         )
 
@@ -118,7 +121,7 @@ def train_one_epoch(
     _, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
     vis_dir = log_dir / 'vq_seg' / (str(epoch))
     vis_dir.mkdir(parents=True, exist_ok=True)
-    for i in range(5):
+    for i in range(min(batch_size,5)):
         seg_rgb = seg_to_rgb(vq_pred_argmax[i].cpu()[None, :, :], cat_colors)
         seg_rgb = (255 * seg_rgb.cpu().numpy()).astype(np.uint8)
         pil_seg = Image.fromarray(seg_rgb[0])
@@ -182,6 +185,7 @@ def evaluate(
                 window_stride,
                 n_cls_train,
                 batch_size=1,
+                tau=1.0
             )
             
             val_seg_pred[filename] = seg_pred.argmax(0).cpu().numpy()

@@ -124,6 +124,7 @@ backbone:
   vit_small_patch32_384:
     image_size: 384
     patch_size: 32
+    #d_model = d_backbone
     d_model: 384
     n_heads: 6
     n_layers: 12
