@@ -267,7 +267,7 @@ class Decoder(nn.Module):
 
         self.norm = nn.LayerNorm(d_model)
         # canny 256
-        self.head = nn.Linear(d_model, 256, bias=True)
+        self.head = nn.Linear(d_model, 16, bias=True)
 
         # use hog feature
         # self.head = nn.Linear(d_model, 108, bias=True)
