@@ -51,7 +51,7 @@ def train_one_epoch(
     data_loader.set_epoch(epoch)
     num_updates = epoch * len(data_loader)
     batch_size = None
-    vq_stats = torch.zeros(model.encoder.n_embeddings).to(ptu.device)
+    unsupervised_stats = torch.zeros(model.encoder.n_embeddings).to(ptu.device)
     for batch in logger.log_every(data_loader, print_freq, header):
         im = batch["im"].to(ptu.device)
         seg_gt = batch["segmentation"].long().to(ptu.device)
@@ -61,34 +61,30 @@ def train_one_epoch(
             break
 
         with amp_autocast():
-            seg_pred, vq_pred, recon_loss, vq_loss, commit_loss, distance_loss, entropy_loss = model.forward(im, return_all=True)
-            # seg_pred shape torch.Size([16, 60, 480, 480]) logits
-            # vq_pred shape torch.Size([16, 128, 480, 480]) vq_logits
+            seg_pred, unsupervised_seg_pred, recon_loss = model.forward(im, return_all=True)
             loss = criterion(seg_pred, seg_gt)
             with torch.no_grad():
                 mask_ = (seg_gt != IGNORE_LABEL).float()
                 mask_sum_ = mask_.sum()
                 acc = ((seg_pred.argmax(1) == seg_gt).float() * mask_).sum() / mask_sum_
 
-                vq_pred_argmax = vq_pred.argmax(dim=1)
-                vq_used, vq_counts = torch.unique(vq_pred_argmax.view(-1), sorted=True, return_counts=True) 
-                vq_stats[vq_used] += vq_counts
+                unsupervised_seg_pred_argmax = unsupervised_seg_pred.argmax(dim=1)
+                unsupervised_seg_used, unsupervised_seg_pred_counts = torch.unique(unsupervised_seg_pred_argmax.view(-1), sorted=True, return_counts=True) 
+                unsupervised_stats[unsupervised_seg_used] += unsupervised_seg_pred_counts
 
-        # loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item() + entropy_loss.item()
-        loss_value = loss.item() + recon_loss.item() + vq_loss.item() + commit_loss.item()
+        loss_value = loss.item() + recon_loss.item()
         if not math.isfinite(loss_value):
-            print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item(), vq_loss.item(), commit_loss.item()), force=True)
+            print("Loss is {}, {}, {} stopping training".format(loss.item(), recon_loss.item()), force=True)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
-                loss + recon_loss + vq_loss + commit_loss ,
+                loss + recon_loss,
                 optimizer,
                 parameters=model.parameters(),
             )
         else:
-            (loss + recon_loss + vq_loss + commit_loss ).backward()
-            #(loss + recon_loss + vq_loss + commit_loss + distance_loss).backward()
+            (loss + recon_loss).backward()
             optimizer.step()
 
         num_updates += 1
@@ -102,24 +98,19 @@ def train_one_epoch(
             loss=loss.item(),
             acc=acc.item(),
             recon_loss=recon_loss.item(),
-            vq_loss=vq_loss.item(),
-            commit_loss=commit_loss.item(),
             learning_rate=optimizer.param_groups[0]["lr"],
         )
 
     # print the stats of the usage of embeddings
     with np.printoptions(precision=3, suppress=True): #, linewidth=100000
-        print(vq_stats.div(vq_stats.sum()).data.cpu().numpy())
-        #vq_used_p = vq_stats.div(vq_stats.sum()).data.cpu().numpy()
-        #print(type(vq_used_p))
-        #print(vq_used_p.shape)
+        print(unsupervised_stats.div(unsupervised_stats.sum()).data.cpu().numpy())
     
     # save some quantization results
     _, cat_colors = dataset_cat_description(ADE20K_CATS_PATH)
     vis_dir = log_dir / 'vq_seg' / (str(epoch))
     vis_dir.mkdir(parents=True, exist_ok=True)
-    for i in range(5):
-        seg_rgb = seg_to_rgb(vq_pred_argmax[i].cpu()[None, :, :], cat_colors)
+    for i in range(min(5, len(unsupervised_seg_pred_argmax))):
+        seg_rgb = seg_to_rgb(unsupervised_seg_pred_argmax[i].cpu()[None, :, :], cat_colors)
         seg_rgb = (255 * seg_rgb.cpu().numpy()).astype(np.uint8)
         pil_seg = Image.fromarray(seg_rgb[0])
         pil_seg.save(vis_dir / "{}.png".format(i))

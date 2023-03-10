@@ -2,17 +2,10 @@ import torch
 import math
 import torch.nn as nn
 import torch.nn.functional as F
-import cv2
-import numpy as np
-from kornia.filters import canny
 
 from model.utils import padding, unpadding
 from einops import rearrange
 from utils.torch import freeze_all_layers_
-
-class CannyDetector:
-    def __call__(self, img, low_threshold, high_threshold):
-        return cv2.Canny(img, low_threshold, high_threshold)
 
 
 class Segmenter(nn.Module):
@@ -37,9 +30,6 @@ class Segmenter(nn.Module):
         self.backbone_trained_by_dino = backbone_trained_by_dino
   
         freeze_all_layers_(self.backbone)
-
-        #use HOG feature
-        self.feat_layer = HOG(nbins=9, pool=8, gaussian_window=16)
 
         self.feat_out = {}
         self.backbone._modules["blocks"][0].register_forward_hook(self.hook_fn_forward_lowlevel)
@@ -75,7 +65,6 @@ class Segmenter(nn.Module):
         H, W = im.size(2), im.size(3)
 
         highlevel_feature = self.backbone.forward(im, return_features=True)[:, 1 + self.backbone.distilled:, :]
-        #print("highlevel_features shape",highlevel_feature.shape) #highlevel_features shape torch.Size([16, 900, 384])
         if self.backbone_trained_by_dino:
             highlevel_feature = self.feat_out["highlevel_feature"]
         lowlevel_feature = self.feat_out["lowlevel_feature"]
@@ -98,48 +87,30 @@ class Segmenter(nn.Module):
 
         features_map = {"high": highlevel_feature, "mid": midlevel_feature, "low": midlevel_feature}
         x = torch.cat([features_map[item] for item in self.encoder.inputs], dim=-1)
-        #x = torch.cat([x, hog_feature], dim =-1)
-        z_e_x, z_q_x_st, z_q_x, vq_logits, distance_loss = self.encoder(x)
+        z_e_x, unsupervised_logits, z_after_attn = self.encoder(x)
         
         if self.training: 
             logits = self.online_head(z_e_x.detach().permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-            # print("logits shape",logits.shape)#torch.Size([16, 60, 480, 480])
         else:
-            logits = vq_logits
+            logits = unsupervised_logits
         
-        # if logits.shape[2] != H:
-        #     logits = F.interpolate(logits, size=(H, W), mode="bilinear")
         logits = unpadding(logits, (H_ori, W_ori))
 
-        #entropy loss
-        entropy = F.softmax(torch.abs(vq_logits).view(-1), dim=0) * F.log_softmax(torch.abs(vq_logits).view(-1), dim=0)
-        entropy_loss = -1.0 * entropy.sum(0)
-
         if return_all:
-            x_tilde = self.decoder(z_q_x_st, highlevel_feature)
-            #print("s_tild.shape",x_tilde.shape)
+            x_tilde = self.decoder(z_after_attn)
             if self.loss_cfg['recon_target'] == 'highlevel_feature':
                 recon_loss = F.mse_loss(x_tilde, highlevel_feature)
             elif self.loss_cfg['recon_target'] == 'midlevel_feature':
                 recon_loss = F.mse_loss(x_tilde, midlevel_feature)
             elif self.loss_cfg['recon_target'] == 'lowlevel_feature':
                 recon_loss = F.mse_loss(x_tilde, lowlevel_feature)
-            elif self.loss_cfg['recon_target'] == 'canny_feature':
-                recon_loss = F.mse_loss(x_tilde, canny_feature)
-            elif self.loss_cfg['recon_target'] == 'pca_feature':
+            elif self.loss_cfg['recon_target'] == 'purified_feature':
                 l,v = torch.linalg.eigh(self.feature_cov)
-                #print(l[:10])
-                #u,_,v = torch.pca_lowrank(highlevel_feature,center=False,q=64)
-                rec_highlevel_feature = torch.matmul(highlevel_feature,v[:,-16:])
+                rec_highlevel_feature = torch.matmul(highlevel_feature,v[:, -16:])
                 recon_loss = F.mse_loss(x_tilde, rec_highlevel_feature)
-            # elif self.loss_cfg['recon_target'] == 'hog_feature':
-            #     recon_loss = F.mse_loss(x_tilde, hog_feature)
             elif self.loss_cfg['recon_target'] == 'raw_pixels':
                 raise NotImplementedError
             else:
                 raise NotImplementedError
-            recon_loss = recon_loss
-            vq_loss = F.mse_loss(z_q_x, z_e_x.detach())
-            commit_loss = F.mse_loss(z_e_x, z_q_x.detach()) * self.loss_cfg['beta']
-            return logits, vq_logits, recon_loss, vq_loss, commit_loss, distance_loss, entropy_loss
+            return logits, unsupervised_logits, recon_loss
         return logits
