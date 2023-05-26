@@ -67,6 +67,7 @@ warnings.filterwarnings('ignore')
 @click.option("--vis_eigenfunc/--no-vis_eigenfunc", default=False, is_flag=True)
 @click.option("--mode", default='our', type=str)
 @click.option("--reco/--no-reco", default=False, is_flag=True)
+@click.option("--hungarian_match/--no-hungarian_match", default=False, is_flag=True)
 
 def main(
     log_dir,
@@ -104,7 +105,8 @@ def main(
     eval_only,
     vis_eigenfunc,
     mode,
-    reco
+    reco,
+    hungarian_match
 ):
     # start distributed mode
     ptu.set_gpu_mode(True)
@@ -258,7 +260,7 @@ def main(
     opt_vars = vars(opt_args)
     for k, v in optimizer_kwargs.items():
         opt_vars[k] = v
-    optimizer = create_optimizer(opt_args, [p for p in model.parameters() if p.requires_grad])
+    optimizer = create_optimizer(opt_args, model)
     if num_epochs > 0:
         lr_scheduler = create_scheduler(opt_args, optimizer)
     amp_autocast = suppress
@@ -367,10 +369,10 @@ def main(
 
         if reco:
             if dataset == 'imagenet':
-                reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir)
-                reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir)
+                reco_protocal_eval(model, 'cityscapes', 'val', backbone_cfg["normalization"], log_dir, hungarian_match)
+                reco_protocal_eval(model, 'pascal_context', 'val', backbone_cfg["normalization"], log_dir, hungarian_match)
             else:
-                reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir)
+                reco_protocal_eval(model, dataset, 'val', backbone_cfg["normalization"], log_dir, hungarian_match)
         else:
             if dataset == 'imagenet':
                 raise NotImplementedError
@@ -385,6 +387,7 @@ def main(
                     window_stride,
                     amp_autocast,
                     log_dir,
+                    hungarian_match
                 )
                 print(f"Stats ['final']:", eval_logger, flush=True)
                 print("")

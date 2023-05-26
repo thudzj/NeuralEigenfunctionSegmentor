@@ -32,7 +32,7 @@ backbone:
     n_layers: 12
     normalization: deit
     distilled: true
-  # deno
+  # dino
   vit_small_patch16_224_dino:
     image_size: 224
     patch_size: 16
@@ -143,6 +143,19 @@ backbone:
     n_heads: 16
     n_layers: 24
     normalization: vit
+  # clip
+  clip_RN50:
+    image_size: 224
+    normalization: clip
+  clip_ViT-B/16:
+    image_size: 224
+    normalization: clip
+  clip_ViT-L/14:
+    image_size: 224
+    normalization: clip
+  clip_ViT-L/14@336px:
+    image_size: 336
+    normalization: clip
 psi:
   num_blocks: 2
   k: 2048

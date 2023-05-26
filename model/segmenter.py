@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from model.utils import padding, unpadding
 from einops import rearrange
 from utils.torch import freeze_all_layers_
-
+from model.vit import VisionTransformer
 
 class Segmenter(nn.Module):
     def __init__(
@@ -18,8 +18,13 @@ class Segmenter(nn.Module):
         backbone_trained_by_dino=False,
     ):
         super().__init__()
+        if isinstance(backbone, VisionTransformer):
+            self.backbone_from_clip = False
+        else:
+            self.backbone_from_clip = True
+            backbone.distilled = 0
         self.n_cls = n_cls
-        self.patch_size = backbone.patch_embed.patch_size
+        self.patch_size = backbone.conv1.kernel_size[0] if self.backbone_from_clip else backbone.patch_embed.patch_size
         self.backbone = backbone
         self.psi = psi
 
@@ -29,10 +34,14 @@ class Segmenter(nn.Module):
         freeze_all_layers_(self.backbone)
 
         self.feat_out = {}
-        self.backbone._modules["blocks"][0].register_forward_hook(self.hook_fn_forward_lowlevel)
-        self.backbone._modules["blocks"][len(self.backbone._modules["blocks"]) // 2].register_forward_hook(self.hook_fn_forward_midlevel)
-        if backbone_trained_by_dino:
-            self.backbone._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(self.hook_fn_forward_highlevel)
+        if self.backbone_from_clip:
+            self.backbone.transformer.resblocks[0].register_forward_hook(self.hook_fn_forward_lowlevel_clip)
+            self.backbone.transformer.resblocks[len(self.backbone.transformer.resblocks) // 2].register_forward_hook(self.hook_fn_forward_midlevel_clip)
+        else:
+            self.backbone._modules["blocks"][0].register_forward_hook(self.hook_fn_forward_lowlevel)
+            self.backbone._modules["blocks"][len(self.backbone._modules["blocks"]) // 2].register_forward_hook(self.hook_fn_forward_midlevel)
+            if backbone_trained_by_dino:
+                self.backbone._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(self.hook_fn_forward_highlevel)
 
         self.online_head = nn.Linear(self.psi.hidden_dim, n_cls)
 
@@ -47,6 +56,12 @@ class Segmenter(nn.Module):
     def hook_fn_forward_highlevel(self, module, input, output):
         output_qkv = output.reshape(output.shape[0], output.shape[1], 3, self.backbone._modules["blocks"][-1]._modules["attn"].heads, -1).permute(2, 0, 3, 1, 4)
         self.feat_out["highlevel_feature"] = output_qkv[1].transpose(1, 2).reshape(output.shape[0], output.shape[1], -1)[:, 1 + self.backbone.distilled:, :]
+
+    def hook_fn_forward_lowlevel_clip(self, module, input, output):
+        self.feat_out["lowlevel_feature"] = output.permute(1, 0, 2)[:, 1 + self.backbone.distilled:, :]
+    
+    def hook_fn_forward_midlevel_clip(self, module, input, output):
+        self.feat_out["midlevel_feature"] = output.permute(1, 0, 2)[:, 1 + self.backbone.distilled:, :]
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -85,7 +100,9 @@ class Segmenter(nn.Module):
         return lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W
 
     def forward(self, im, tau=None, return_neuralef_loss=False, return_features=False, none_mask=False):
+        oori_h, oori_w = im.shape[2], im.shape[3]
         with torch.no_grad():
+            im = F.interpolate(im, self.backbone.input_resolution, mode='bicubic') if self.backbone_from_clip else im
             lowlevel_feature, midlevel_feature, highlevel_feature, im, H_ori, W_ori, H, W = self.forward_features(im)
             h = H // self.patch_size
             
@@ -118,6 +135,10 @@ class Segmenter(nn.Module):
             masks = torch.cat([F.interpolate(masks[i*upsample_bs:min((i+1)*upsample_bs, len(masks))], size=(H, W), mode="bilinear")
                 for i in range(int(math.ceil(float(len(masks))/upsample_bs)))])
             masks = unpadding(masks, (H_ori, W_ori))
+
+            if self.backbone_from_clip:
+                masks = torch.cat([F.interpolate(masks[i*upsample_bs:min((i+1)*upsample_bs, len(masks))], size=(oori_h, oori_w), mode="bilinear")
+                    for i in range(int(math.ceil(float(len(masks))/upsample_bs)))])
 
         if return_neuralef_loss:
             with torch.no_grad():

@@ -15,33 +15,40 @@ import utils.torch as ptu
 
 from model.vit import VisionTransformer
 from model.utils import checkpoint_filter_fn
-
+import clip
 
 def create_backbone(backbone_cfg):
 
     backbone_cfg = backbone_cfg.copy()
     backbone = backbone_cfg.pop("name")
 
-    normalization = backbone_cfg.pop("normalization")
-    backbone_cfg["n_cls"] = 1000
-    mlp_expansion_ratio = 4
-    backbone_cfg["d_ff"] = mlp_expansion_ratio * backbone_cfg["d_model"]
-
-    if backbone in default_cfgs:
-        default_cfg = default_cfgs[backbone]
+    if 'clip' in backbone:
+        backbone
+        model, preprocess = clip.load(backbone.replace("clip_", ""))
+        model = model.visual.float()
+        model.d_model = model.transformer.width
+        model.eval()
     else:
-        assert False
+        normalization = backbone_cfg.pop("normalization")
+        backbone_cfg["n_cls"] = 1000
+        mlp_expansion_ratio = 4
+        backbone_cfg["d_ff"] = mlp_expansion_ratio * backbone_cfg["d_model"]
 
-    default_cfg["input_size"] = (
-        3,
-        backbone_cfg["image_size"][0],
-        backbone_cfg["image_size"][1],
-    )
-    model = VisionTransformer(**backbone_cfg)
-    if "deit" in backbone or 'dino' in backbone:
-        load_pretrained(model, default_cfg, filter_fn=checkpoint_filter_fn, strict=True)
-    else:
-        load_custom_pretrained(model, default_cfg)
+        if backbone in default_cfgs:
+            default_cfg = default_cfgs[backbone]
+        else:
+            assert False
+
+        default_cfg["input_size"] = (
+            3,
+            backbone_cfg["image_size"][0],
+            backbone_cfg["image_size"][1],
+        )
+        model = VisionTransformer(**backbone_cfg)
+        if "deit" in backbone or 'dino' in backbone:
+            load_pretrained(model, default_cfg, filter_fn=checkpoint_filter_fn, strict=True)
+        else:
+            load_custom_pretrained(model, default_cfg)
 
     return model
     

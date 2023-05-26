@@ -233,4 +233,27 @@ CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/11 --dataset imagenet --no
 
 visualize eigenfunctions:
 CUDA_VISIBLE_DEVICES=0 python train.py --log-dir logs/40-2 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --eval-only --vis_eigenfunc
+
+
+
+
+
+-----------------for retuttal-----------------
+CUDA_VISIBLE_DEVICES=1 python train.py --log-dir rebuttal_logs/0 --dataset pascal_context --no-resume --backbone vit_tiny_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --reco
+    mIoU (bi) 0.316 (0.321) | Pixel acc (bi) 0.682 (0.687): : 11it [00:06,  1.57it/s]
+CUDA_VISIBLE_DEVICES=2 python train.py --log-dir rebuttal_logs/1 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --reco
+    mIoU (bi) 0.375 (0.379) | Pixel acc (bi) 0.697 (0.699): : 11it [00:05,  1.86it/s]
+CUDA_VISIBLE_DEVICES=3 python train.py --log-dir rebuttal_logs/2 --dataset pascal_context --no-resume --backbone clip_ViT-B/16 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --reco
+    mIoU (bi) 0.367 (0.372) | Pixel acc (bi) 0.724 (0.726)
+CUDA_VISIBLE_DEVICES=4 python train.py --log-dir rebuttal_logs/3_3 --dataset pascal_context --no-resume --backbone clip_ViT-L/14 --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --reco  --tau_min 0.5
+    mIoU (bi) 0.327 (0.340) | Pixel acc (bi) 0.682 (0.695)
+    mIoU (bi) 0.375 (0.387) | Pixel acc (bi) 0.711 (0.722)
+    mIoU (bi) 0.332 (0.346) | Pixel acc (bi) 0.694 (0.707)
+
+CUDA_VISIBLE_DEVICES=5 python train.py --log-dir rebuttal_logs/4 --dataset pascal_context --no-resume --backbone clip_ViT-L/14@336px --epochs 40 -lr .001 --psi_k 256 --alpha 0.08 --reco  --tau_min 0.5
+    mIoU (bi) 0.431 (0.440) | Pixel acc (bi) 0.773 (0.780)
+CUDA_VISIBLE_DEVICES=6 python train.py --log-dir rebuttal_logs/5 --dataset pascal_context --no-resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 60 --alpha 0.3413 --reco
+    mIoU (bi) 0.277 (0.280) | Pixel acc (bi) 0.701 (0.704)
+    CUDA_VISIBLE_DEVICES=6 python train.py --log-dir rebuttal_logs/5 --dataset pascal_context --resume --backbone vit_small_patch16_384 --batch-size 16 --epochs 40 -lr .001 --psi_k 60 --alpha 0.3413 --reco --hungarian_match
+        mIoU (bi) 0.232 (0.235) | Pixel acc (bi) 0.405 (0.408)
 ```

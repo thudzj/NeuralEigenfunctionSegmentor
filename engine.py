@@ -28,6 +28,8 @@ import torchvision
 from reco.utils.utils import get_dataset
 from reco.metrics.running_score import RunningScore
 from reco.datasets.coco_stuff import coco_stuff_171_to_27
+from scipy.optimize import linear_sum_assignment
+
 
 
 def train_one_epoch(
@@ -163,6 +165,7 @@ def evaluate(
     window_stride,
     amp_autocast,
     log_dir,
+    hungarian_match
 ):
     n_cls_train = model.psi.psi_dim
     n_cls = data_loader.unwrapped.n_cls
@@ -227,7 +230,11 @@ def evaluate(
     keys = val_seg_pred.keys()
 
     # find the mapping from ground-truth labels to clustering assignments
-    maps = optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, IGNORE_LABEL, iou=True)
+    if hungarian_match:
+        maps = optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, IGNORE_LABEL, iou=False, hungarian_match=True)
+    else:
+        maps = optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, IGNORE_LABEL, iou=True)
+    
     print(torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0))
     un_matched = (torch.nn.functional.one_hot(torch.from_numpy(maps).long(), n_cls).sum(0) == 0).nonzero()
     print("un_matched", un_matched.numpy())
@@ -291,7 +298,7 @@ def process(k, val_seg_pred_, val_img_folder):
     prob = postprocessor(image, unary_potentials)
     return np.argmax(prob, axis=0)
 
-def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou=False):
+def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou=False, hungarian_match=False):
    
     # stats of i-th ground-truth laebl to j-th clustering assignment
     if isinstance(val_seg_gt, dict):
@@ -321,12 +328,23 @@ def optimal_map(val_seg_gt, val_seg_pred, n_cls_train, n_cls, ignore_indice, iou
     assert counts.sum() + count_ignore_indice.sum() == len(v1), (counts.sum(), count_ignore_indice.sum(), len(v1))
     if iou:
         counts = counts / (counts.sum(0, keepdims=True) + counts.sum(1, keepdims=True) - counts).clip(1e-8)
-    maps = np.argmax(counts, -1)
+    
+    if not hungarian_match:
+        maps = np.argmax(counts, -1)
+    else:
+        match = linear_sum_assignment(v1.shape[0] - counts)
+        match = np.array(list(zip(*match)))
+        print(match, match.shape)
+        maps = np.ones((n_cls_train)) * (0)
+        for item in match:
+            maps[item[0]] = item[1]
+        # print(np.unique(maps, return_counts=True))
+
     return maps
 
 
 @torch.no_grad()
-def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, batch_size=32, n_workers=4):
+def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, hungarian_match, batch_size=32, n_workers=4):
     vis_dir = dir_ckpt / "reco" / model.mode / dataset_name
     vis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -382,10 +400,13 @@ def reco_protocal_eval(model, dataset_name, split, normalization, dir_ckpt, batc
     n_cls = dataset.n_categories
     print("n_cls", n_cls, "min_label", min([item.min().item() for item in val_gts]))
     # find the mapping from ground-truth labels to clustering assignments
-    maps = torch.from_numpy(optimal_map(torch.cat(val_gts).flatten().numpy(), torch.cat(dt_crf_argmaxs).flatten().numpy(), n_cls_train, n_cls, -1, iou=True)).long()
-    print(torch.nn.functional.one_hot(maps, n_cls).sum(0))
-    un_matched = (torch.nn.functional.one_hot(maps, n_cls).sum(0) == 0).nonzero()
-    print("un_matched", un_matched.numpy())
+    if hungarian_match:
+        maps = torch.from_numpy(optimal_map(torch.cat(val_gts).flatten().numpy(), torch.cat(dt_crf_argmaxs).flatten().numpy(), n_cls_train, n_cls, -1, iou=False, hungarian_match=True)).long()
+    else:
+        maps = torch.from_numpy(optimal_map(torch.cat(val_gts).flatten().numpy(), torch.cat(dt_crf_argmaxs).flatten().numpy(), n_cls_train, n_cls, -1, iou=True)).long()
+    # print(torch.nn.functional.one_hot(maps, n_cls).sum(0))
+    # un_matched = (torch.nn.functional.one_hot(maps, n_cls).sum(0) == 0).nonzero()
+    # print("un_matched", un_matched.numpy())
     
     pbar = tqdm.tqdm(enumerate(zip(val_imgs, val_gts, dt_argmaxs, dt_crf_argmaxs)))
     for num_batch, (val_img, val_gt, dt_argmax, dt_crf_argmax) in pbar:
