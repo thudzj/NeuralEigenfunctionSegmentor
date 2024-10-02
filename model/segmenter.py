@@ -120,7 +120,7 @@ class Segmenter(nn.Module):
             masks = None
         else:
             if self.training:
-                masks = self.online_head(rearrange(hidden, "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
+                masks = self.online_head(rearrange(hidden.detach(), "b (h w) c -> b h w c", h=h)).permute(0, 3, 1, 2)
             else:
                 if self.mode == 'our':
                     masks = rearrange(Psi, "b (h w) c -> b h w c", h=h).permute(0, 3, 1, 2).div(self.tau_min)
